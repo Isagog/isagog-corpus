@@ -26,7 +26,13 @@ import httpx
 from corpus.base import Corpus
 from corpus.capabilities import Capability, CorpusCapabilities
 from corpus.cursor import decode_cursor, encode_cursor
-from corpus.errors import CorpusConfigError, CorpusError, DocumentNotFound, InvalidDocument
+from corpus.errors import (
+    CorpusConfigError,
+    CorpusError,
+    CorpusUnavailable,
+    DocumentNotFound,
+    InvalidDocument,
+)
 from corpus.models import Article, ArticlePage, ArticleRef, Edition, EditionRef
 from corpus.query import ArticleQuery, EditionQuery
 from corpus.signals import ChangeSignal
@@ -40,7 +46,7 @@ from corpus_directus.compile import (
     compile_edition_query,
     edition_projection,
 )
-from corpus_directus.errors import from_status, from_transport_error
+from corpus_directus.errors import Scope, from_status, from_transport_error
 from corpus_directus.inbound import parse_change
 from corpus_directus.rows import (
     article_from_row,
@@ -54,6 +60,13 @@ from corpus_directus.settings import DEFAULT_TIMEOUTS, DirectusCorpusSettings, T
 logger = logging.getLogger(__name__)
 
 DEFAULT_EDITION_PAGE_SIZE = 100
+
+#: A runaway guard, not a result limit. `list_editions` walks to exhaustion by
+#: design, and this archive holds 19 205 editions back to 1971 — so a caller
+#: who forgets a date bound and passes a small page size issues thousands of
+#: requests before anyone notices. At the default page size this allows
+#: 100 000 editions, far beyond any real archive.
+DEFAULT_MAX_EDITION_PAGES = 1000
 
 _BACKEND_CAPABILITIES = frozenset(Capability) - {Capability.RESULT_WEBHOOK}
 
@@ -154,10 +167,11 @@ class DirectusCorpus(Corpus):
         inner: str | None = cursor if "d" in position else None
 
         for index in range(start, len(chunks)):
+            chunk_cursor = inner if index == start else None
             params = compile_article_query(
                 query,
                 self._schema,
-                cursor=inner if index == start else None,
+                cursor=chunk_cursor,
                 ids=chunks[index] or None,
             )
             rows = await self._get_many(
@@ -169,7 +183,11 @@ class DirectusCorpus(Corpus):
             items = tuple(article_ref_from_row(row, self._schema) for row in rows)
             return ArticlePage(
                 items=items,
-                next_cursor=self._next_cursor(rows, query, index, len(chunks)),
+                # The tie group carries forward only while the boundary instant
+                # is unchanged, so a cursor that jumped to a new chunk starts clean.
+                next_cursor=self._next_cursor(
+                    rows, query, index, len(chunks), position if chunk_cursor else {}
+                ),
             )
         return ArticlePage(items=(), next_cursor=None)
 
@@ -184,15 +202,23 @@ class DirectusCorpus(Corpus):
         return edition_from_row(row, self._schema)
 
     async def list_editions(
-        self, query: EditionQuery, *, page_size: int = DEFAULT_EDITION_PAGE_SIZE
+        self,
+        query: EditionQuery,
+        *,
+        page_size: int = DEFAULT_EDITION_PAGE_SIZE,
+        max_pages: int = DEFAULT_MAX_EDITION_PAGES,
     ) -> tuple[EditionRef, ...]:
         """Offset-paged to exhaustion. Directus has no keyset order here that
         beats `editionDate`, and a truncated listing is how memaflow2 silently
-        lost editions."""
+        lost editions.
+
+        `max_pages` bounds the walk itself, never the result. Hitting it raises
+        rather than returning what was collected so far: a short listing that
+        looks complete is the defect this exhaustive walk exists to prevent.
+        """
         self._require(Capability.EDITIONS)
         editions: list[EditionRef] = []
-        page = 1
-        while True:
+        for page in range(1, max_pages + 1):
             params = compile_edition_query(query, self._schema, page=page, page_size=page_size)
             rows = await self._get_many(
                 f"/items/{self._schema.editions_collection}", params, "edition listing"
@@ -200,7 +226,13 @@ class DirectusCorpus(Corpus):
             editions.extend(_edition_refs(rows, self._schema))
             if len(rows) < page_size:
                 return tuple(editions)
-            page += 1
+        raise CorpusUnavailable(
+            f"edition listing did not finish within {max_pages} pages of {page_size} "
+            f"({len(editions)} rows so far) — bound it with EditionQuery date_from/date_to, "
+            f"or raise page_size",
+            kind="http",
+            retryable=False,
+        )
 
     # --- assets -----------------------------------------------------------
     async def stream_asset(self, asset_id: str) -> AsyncIterator[bytes]:
@@ -212,7 +244,10 @@ class DirectusCorpus(Corpus):
                 if response.status_code >= 400:
                     await response.aread()
                     raise from_status(
-                        response.status_code, context, response.headers.get("Retry-After")
+                        response.status_code,
+                        context,
+                        response.headers.get("Retry-After"),
+                        scope="document",
                     )
                 async for chunk in response.aiter_bytes():
                     yield chunk
@@ -240,14 +275,24 @@ class DirectusCorpus(Corpus):
         await self._client.aclose()
 
     # --- internals --------------------------------------------------------
-    async def _get_json(self, path: str, params: Mapping[str, str] | None, context: str) -> Any:
+    async def _get_json(
+        self,
+        path: str,
+        params: Mapping[str, str] | None,
+        context: str,
+        *,
+        scope: Scope = "collection",
+    ) -> Any:
         try:
             response = await self._client.get(path, params=dict(params or {}))
         except Exception as exc:
             raise from_transport_error(exc, context) from None
         if response.status_code >= 400:
             raise from_status(
-                response.status_code, context, response.headers.get("Retry-After")
+                response.status_code,
+                context,
+                response.headers.get("Retry-After"),
+                scope=scope,
             ) from None
         try:
             return response.json()
@@ -257,7 +302,7 @@ class DirectusCorpus(Corpus):
     async def _get_one(
         self, path: str, params: Mapping[str, str], context: str
     ) -> Mapping[str, Any]:
-        payload = await self._get_json(path, params, context)
+        payload = await self._get_json(path, params, context, scope="document")
         data = payload.get("data") if isinstance(payload, Mapping) else None
         if not data:
             # A 200 carrying no data is not the same event as a 404, and the
@@ -284,21 +329,60 @@ class DirectusCorpus(Corpus):
         query: ArticleQuery,
         chunk_index: int,
         chunk_count: int,
+        previous: Mapping[str, Any],
     ) -> str | None:
         if len(rows) >= query.page_size:
-            last = rows[-1]
+            date_field = self._schema.article_field("publish_date")
+            # The raw CMS value, not the normalised day: the keyset filter is
+            # compared by the backend against its own column.
+            boundary = str(rows[-1].get(date_field) or "")
             return encode_cursor(
                 {
                     "c": chunk_index,
-                    # The raw CMS value, not the normalised day: the keyset filter
-                    # is compared by the backend against its own column.
-                    "d": str(last.get(self._schema.article_field("publish_date")) or ""),
-                    "i": str(last.get(self._schema.article_field("id")) or ""),
+                    "d": boundary,
+                    "x": self._tie_group(rows, previous, boundary, date_field),
                 }
             )
         if chunk_index + 1 < chunk_count:
             return encode_cursor({"c": chunk_index + 1})
         return None
+
+    def _tie_group(
+        self,
+        rows: list[Mapping[str, Any]],
+        previous: Mapping[str, Any],
+        boundary: str,
+        date_field: str,
+    ) -> list[str]:
+        """The ids already served at the boundary instant.
+
+        This is the keyset tiebreaker: Directus has no ordering operator for a
+        uuid column, so the next page excludes these by id instead of asking
+        for `id > last`. The set is reset whenever the boundary instant moves,
+        so it stays as small as the number of articles sharing one timestamp.
+        """
+        id_field = self._schema.article_field("id")
+        served = [
+            str(row.get(id_field) or "")
+            for row in rows
+            if str(row.get(date_field) or "") == boundary
+        ]
+        if str(previous.get("d", "")) == boundary:
+            carried = previous.get("x")
+            if isinstance(carried, list):
+                served = [*(str(value) for value in carried), *served]
+
+        unique = list(dict.fromkeys(served))
+        if len(unique) > self._max_ids:
+            # Truncating would silently skip or repeat rows — the precise
+            # defect keyset paging exists to prevent — so this fails loudly.
+            raise CorpusUnavailable(
+                f"{len(unique)} articles share the timestamp {boundary!r}, more than the "
+                f"{self._max_ids} ids this backend can exclude in one URL",
+                kind="http",
+                retryable=False,
+            )
+        return unique
 
 
 def _edition_refs(rows: list[Mapping[str, Any]], schema: DirectusSchema) -> list[EditionRef]:

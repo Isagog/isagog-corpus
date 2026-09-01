@@ -117,17 +117,37 @@ class TestArticleQueryCompilation:
 @pytest.mark.unit
 class TestKeysetPagination:
     def test_descending_cursor_compiles_to_an_or_group(self):
-        cursor = encode_cursor({"d": "2024-01-15", "i": "abc"})
+        cursor = encode_cursor({"d": "2024-01-15", "x": ["abc", "def"]})
         params = _params(ArticleQuery(), cursor=cursor)
         assert params["filter[_or][0][datePublished][_lt]"] == "2024-01-15"
         assert params["filter[_or][1][_and][0][datePublished][_eq]"] == "2024-01-15"
-        assert params["filter[_or][1][_and][1][id][_lt]"] == "abc"
+        assert params["filter[_or][1][_and][1][id][_nin]"] == "abc,def"
 
     def test_ascending_cursor_flips_the_operators(self):
-        cursor = encode_cursor({"d": "2024-01-15", "i": "abc"})
+        cursor = encode_cursor({"d": "2024-01-15", "x": ["abc"]})
         params = _params(ArticleQuery(order=ArticleOrder.PUBLISH_DATE_ASC), cursor=cursor)
         assert params["filter[_or][0][datePublished][_gt]"] == "2024-01-15"
-        assert params["filter[_or][1][_and][1][id][_gt]"] == "abc"
+        assert params["filter[_or][1][_and][1][id][_nin]"] == "abc"
+
+    def test_the_tiebreaker_never_orders_by_id(self):
+        """Directus refuses `_lt`/`_gt` on a uuid column, so a comparison
+        against `id` is a 400 in production and must never be compiled."""
+        cursor = encode_cursor({"d": "2024-01-15", "x": ["abc"]})
+        for order in ArticleOrder:
+            params = _params(ArticleQuery(order=order), cursor=cursor)
+            offending = [
+                key
+                for key in params
+                if "[id][" in key and any(op in key for op in ("_lt", "_lte", "_gt", "_gte"))
+            ]
+            assert not offending, offending
+
+    def test_an_empty_tie_group_compiles_to_a_plain_comparison(self):
+        """Nothing has been served at that instant yet, so a strict comparison
+        is exact and a one-branch _or would only lengthen the URL."""
+        params = _params(ArticleQuery(), cursor=encode_cursor({"d": "2024-01-15"}))
+        assert params["filter[datePublished][_lt]"] == "2024-01-15"
+        assert not [k for k in params if "_or" in k]
 
     def test_no_cursor_means_no_or_group(self):
         assert not [k for k in _params(ArticleQuery()) if "_or" in k]

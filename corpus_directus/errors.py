@@ -9,6 +9,8 @@ needed for debugging is lost.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import httpx
 from corpus.errors import (
     CorpusAuthError,
@@ -30,9 +32,40 @@ def from_transport_error(exc: Exception, context: str) -> CorpusError:
     return CorpusUnavailable(detail, kind="http")
 
 
-def from_status(status_code: int, context: str, retry_after: str | None = None) -> CorpusError:
+#: Whether the request asked for ONE document by id or for a collection. It is
+#: the only thing that makes a Directus 403 interpretable — see `from_status`.
+Scope = Literal["document", "collection"]
+
+
+def from_status(
+    status_code: int,
+    context: str,
+    retry_after: str | None = None,
+    *,
+    scope: Scope = "collection",
+) -> CorpusError:
+    """Native status → taxonomy.
+
+    The 403 row is the subtle one. Directus hides existence on purpose: it
+    answers `403 FORBIDDEN` for a document that does not exist, for one the
+    token may not read, and for a whole collection the token may not read —
+    all with the same body. Only `401 INVALID_CREDENTIALS` means the
+    credentials themselves were rejected.
+
+    So the request's shape decides. Asking for one document by id, "absent"
+    and "hidden from you" call for the same thing at that call site, and
+    `DocumentNotFound` is what every consumer's retry table already handles.
+    A forbidden *listing* is never one missing row — it is a misconfigured
+    permission or a wrong collection name — and degrading it to an empty
+    result would let a pipeline process nothing while reporting success, so
+    that stays an auth failure.
+    """
     detail = f"{context}: HTTP {status_code}"
-    if status_code in (401, 403):
+    if status_code == 401:
+        return CorpusAuthError(detail)
+    if status_code == 403:
+        if scope == "document":
+            return DocumentNotFound(detail, source="status")
         return CorpusAuthError(detail)
     if status_code == 404:
         return DocumentNotFound(detail, source="status")

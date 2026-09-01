@@ -13,8 +13,16 @@ from corpus.errors import (
     DocumentNotFound,
     InvalidDocument,
 )
+from corpus.models import Article
 from corpus.query import ArticleQuery, EditionQuery
-from corpus.testing.fixtures import ARTICLE_1_ID, DEFAULT_SEED, EDITION_1_ID, PDF_ASSET_ID
+from corpus.testing.fixtures import (
+    ARTICLE_1_ID,
+    DEFAULT_SEED,
+    EDITION_1_ID,
+    PDF_ASSET_ID,
+    CorpusSeed,
+    SeedArticle,
+)
 from corpus_directus.client import DirectusCorpus
 from corpus_directus.settings import Timeouts
 
@@ -150,7 +158,9 @@ class TestErrorTable:
             (httpx.Response(200, json={"data": []}), DocumentNotFound, False),
             (httpx.Response(404), DocumentNotFound, False),
             (httpx.Response(401), CorpusAuthError, False),
-            (httpx.Response(403), CorpusAuthError, False),
+            # 403 on a single document is Directus hiding existence, not a
+            # credentials failure — see TestForbiddenIsScopeDependent.
+            (httpx.Response(403), DocumentNotFound, False),
             (httpx.Response(400), CorpusUnavailable, False),
             (httpx.Response(500), CorpusUnavailable, True),
             (httpx.Response(502), CorpusUnavailable, True),
@@ -258,3 +268,163 @@ class TestErrorTable:
             with pytest.raises(CorpusUnavailable) as excinfo:
                 await corpus.get_edition(EDITION_1_ID)
         assert excinfo.value.retryable is True
+
+
+def _tied_seed(count: int) -> CorpusSeed:
+    """Every article on the same day, so the stub stamps them all with the
+    identical `datePublished`. This is not contrived: an edition's articles are
+    written to this CMS within the same second."""
+    return CorpusSeed(
+        articles=tuple(
+            SeedArticle(
+                article=Article(
+                    id=f"550e8400-e29b-41d4-a716-44665544{n:04d}",
+                    slug=f"articolo-{n}",
+                    publish_date="2024-02-01",
+                    author="",
+                    headline=f"Titolo {n}",
+                    kicker="",
+                    body="B" * 400,
+                )
+            )
+            for n in range(1, count + 1)
+        ),
+        editions=(),
+        assets={},
+    )
+
+
+@pytest.mark.integration
+class TestKeysetPaginationOverTies:
+    async def test_walks_a_whole_tie_group_without_skipping_or_repeating(self):
+        """The regression guard for the uuid keyset defect.
+
+        Ten articles at one instant, paged one at a time: the tiebreaker has to
+        carry every id already served at that instant into the next request,
+        because Directus cannot compare uuids.
+        """
+        seed = _tied_seed(10)
+        instance = DirectusCorpus(base_url=BASE_URL, api_key="test-key")
+        try:
+            with respx.mock(base_url=BASE_URL) as mock:
+                mock.route().mock(side_effect=DirectusStub(seed))
+                walked = [ref.id async for ref in instance.iter_articles(ArticleQuery(page_size=1))]
+        finally:
+            await instance.aclose()
+
+        assert len(walked) == len(set(walked)), "a row was served twice"
+        assert set(walked) == {s.article.id for s in seed.articles}, "pagination skipped rows"
+
+    async def test_the_tie_group_never_compares_uuids(self):
+        """Not one request may carry an ordering operator on `id` — that is the
+        400 this fix exists to remove."""
+        stub = DirectusStub(_tied_seed(6))
+        instance = DirectusCorpus(base_url=BASE_URL, api_key="test-key")
+        try:
+            with respx.mock(base_url=BASE_URL) as mock:
+                mock.route().mock(side_effect=stub)
+                _ = [ref.id async for ref in instance.iter_articles(ArticleQuery(page_size=2))]
+        finally:
+            await instance.aclose()
+
+        offending = [
+            key
+            for request in stub.requests
+            for key in request.url.params
+            if "[id][" in key and any(op in key for op in ("_lt", "_lte", "_gt", "_gte"))
+        ]
+        assert not offending, offending
+
+    async def test_the_tie_group_resets_when_the_instant_moves(self):
+        """Otherwise the exclusion set would grow for the whole walk instead of
+        staying as small as one timestamp's worth of articles."""
+        stub = DirectusStub(DEFAULT_SEED)
+        instance = DirectusCorpus(base_url=BASE_URL, api_key="test-key")
+        try:
+            with respx.mock(base_url=BASE_URL) as mock:
+                mock.route().mock(side_effect=stub)
+                _ = [ref.id async for ref in instance.iter_articles(ArticleQuery(page_size=1))]
+        finally:
+            await instance.aclose()
+
+        widest = max(
+            len(request.url.params.get("filter[_or][1][_and][1][id][_nin]", "").split(","))
+            for request in stub.requests
+        )
+        assert widest <= 2, "the exclusion set outgrew the largest tie group in the seed"
+
+    async def test_a_tie_group_wider_than_the_url_budget_fails_loudly(self):
+        """Truncating it would silently skip or repeat rows — the precise defect
+        keyset paging exists to prevent."""
+        instance = DirectusCorpus(base_url=BASE_URL, api_key="test-key", max_ids_per_query=2)
+        try:
+            with respx.mock(base_url=BASE_URL) as mock:
+                mock.route().mock(side_effect=DirectusStub(_tied_seed(6)))
+                with pytest.raises(CorpusUnavailable) as excinfo:
+                    _ = [ref.id async for ref in instance.iter_articles(ArticleQuery(page_size=1))]
+        finally:
+            await instance.aclose()
+        assert excinfo.value.retryable is False
+        assert "share the timestamp" in str(excinfo.value)
+
+
+@pytest.mark.integration
+class TestForbiddenIsScopeDependent:
+    """Directus answers 403 FORBIDDEN for a document that does not exist, one
+    the token may not read, and a collection it may not read at all — the same
+    body every time. Only 401 means the credentials were rejected. The
+    request's shape is the only thing that makes the 403 interpretable."""
+
+    async def test_a_forbidden_document_is_not_found(self, corpus):
+        with respx.mock:
+            respx.get(ARTICLE_URL).mock(return_value=httpx.Response(403))
+            with pytest.raises(DocumentNotFound) as excinfo:
+                await corpus.get_article(ARTICLE_1_ID)
+        assert excinfo.value.source == "status"
+
+    async def test_a_forbidden_asset_is_not_found(self, corpus):
+        with respx.mock:
+            respx.get(f"{BASE_URL}/assets/{PDF_ASSET_ID}").mock(return_value=httpx.Response(403))
+            with pytest.raises(DocumentNotFound):
+                await corpus.fetch_asset(PDF_ASSET_ID, max_bytes=1_000)
+
+    async def test_a_forbidden_listing_stays_an_auth_failure(self, corpus):
+        """Degrading this to an empty page would let a pipeline process nothing
+        and report success — the failure mode a misconfigured collection
+        permission actually produces."""
+        with respx.mock:
+            respx.get(f"{BASE_URL}/items/articles").mock(return_value=httpx.Response(403))
+            with pytest.raises(CorpusAuthError):
+                await corpus.search_articles(ArticleQuery(page_size=5))
+
+    async def test_a_forbidden_health_probe_stays_an_auth_failure(self, corpus):
+        with respx.mock:
+            respx.get(f"{BASE_URL}/users/me").mock(return_value=httpx.Response(403))
+            with pytest.raises(CorpusAuthError):
+                await corpus.ping()
+
+    async def test_rejected_credentials_are_still_an_auth_failure(self, corpus):
+        """401 is unambiguous, and must not be softened by the 403 rule."""
+        with respx.mock:
+            respx.get(ARTICLE_URL).mock(return_value=httpx.Response(401))
+            with pytest.raises(CorpusAuthError):
+                await corpus.get_article(ARTICLE_1_ID)
+
+
+@pytest.mark.integration
+class TestEditionListingIsBounded:
+    async def test_a_walk_that_never_finishes_raises_instead_of_truncating(self, corpus, stub):
+        """Returning the rows collected so far would be a short listing that
+        looks complete — the defect the exhaustive walk exists to prevent."""
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.route().mock(side_effect=stub)
+            with pytest.raises(CorpusUnavailable) as excinfo:
+                await corpus.list_editions(EditionQuery(), page_size=1, max_pages=2)
+        assert excinfo.value.retryable is False
+        assert "date_from" in str(excinfo.value)
+
+    async def test_a_walk_that_finishes_is_unaffected(self, corpus, stub):
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.route().mock(side_effect=stub)
+            editions = await corpus.list_editions(EditionQuery(), page_size=1, max_pages=50)
+        assert len(editions) == len(DEFAULT_SEED.editions)
