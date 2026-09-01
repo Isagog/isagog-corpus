@@ -1,4 +1,4 @@
-.PHONY: install test cov lint typecheck boundaries check staging
+.PHONY: install test cov lint typecheck boundaries check staging demo
 
 install:
 	uv sync --group dev
@@ -25,3 +25,7 @@ check: lint typecheck cov boundaries
 # The third contract run: against a live instance, keeping the schema honest.
 staging:
 	uv run pytest -m staging --override-ini="addopts="
+
+# Run the example against a live instance; needs examples/.env (see examples/.env.example).
+demo:
+	uv run --extra examples python examples/latest_edition_authors.py

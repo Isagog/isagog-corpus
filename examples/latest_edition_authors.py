@@ -60,12 +60,12 @@ async def main() -> None:
         newest = max(refs, key=lambda ref: ref.date)
 
         edition = await corpus.get_edition(newest.id)
-        print(f"Edition {edition.date} — {len(edition.articles)} article(s)\n")
+        print(f"Edition {edition.date} (id={edition.id}) — {len(edition.articles)} article(s)\n")
 
         for article in edition.articles:
             author = article.author or "Unknown"
             url = ARTICLE_URL_TEMPLATE.format(slug=article.slug)
-            print(f"{author} — {_hyperlink(url, article.headline)}")
+            print(f"{author} — {_hyperlink(url, article.headline)} (id={article.id})")
     finally:
         await corpus.aclose()
 
