@@ -26,6 +26,7 @@ from corpus.models import (
     ArticleRef,
     AssetRef,
     Edition,
+    EditionCover,
     EditionRef,
 )
 from corpus.notify import NullNotifier, PublishResult, ResultNotifier
@@ -57,6 +58,7 @@ __all__ = [
     "CorpusUnavailable",
     "DocumentNotFound",
     "Edition",
+    "EditionCover",
     "EditionQuery",
     "EditionRef",
     "InvalidDocument",

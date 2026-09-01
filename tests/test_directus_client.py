@@ -5,6 +5,7 @@ import pytest
 import respx
 from corpus.capabilities import Capability
 from corpus.errors import (
+    CapabilityNotSupported,
     CorpusAuthError,
     CorpusConfigError,
     CorpusError,
@@ -19,11 +20,13 @@ from corpus.testing.fixtures import (
     ARTICLE_1_ID,
     DEFAULT_SEED,
     EDITION_1_ID,
+    EDITION_2_ID,
     PDF_ASSET_ID,
     CorpusSeed,
     SeedArticle,
 )
 from corpus_directus.client import DirectusCorpus
+from corpus_directus.schema import DirectusSchema
 from corpus_directus.settings import Timeouts
 
 from tests.directus_stub import DirectusStub
@@ -397,6 +400,15 @@ class TestForbiddenIsScopeDependent:
             with pytest.raises(CorpusAuthError):
                 await corpus.search_articles(ArticleQuery(page_size=5))
 
+    async def test_a_forbidden_cover_lookup_stays_an_auth_failure(self, corpus):
+        """A cover is compiled as a filtered listing, so the same reasoning
+        holds: a 403 there is a permission problem, not an edition without a
+        front page."""
+        with respx.mock:
+            respx.get(f"{BASE_URL}/items/articles").mock(return_value=httpx.Response(403))
+            with pytest.raises(CorpusAuthError):
+                await corpus.get_edition_cover(EDITION_1_ID)
+
     async def test_a_forbidden_health_probe_stays_an_auth_failure(self, corpus):
         with respx.mock:
             respx.get(f"{BASE_URL}/users/me").mock(return_value=httpx.Response(403))
@@ -428,3 +440,55 @@ class TestEditionListingIsBounded:
             mock.route().mock(side_effect=stub)
             editions = await corpus.list_editions(EditionQuery(), page_size=1, max_pages=50)
         assert len(editions) == len(DEFAULT_SEED.editions)
+
+
+@pytest.mark.integration
+class TestEditionCover:
+    async def test_reaches_the_front_page_in_one_request(self, corpus, stub):
+        """The image indirection resolves through the projection, so no second
+        round trip is needed to learn the file id, type or size."""
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.route().mock(side_effect=stub)
+            cover = await corpus.get_edition_cover(EDITION_1_ID)
+
+        assert len(stub.requests) == 1
+        assert cover.headline == "Prima pagina del 15 gennaio"
+        assert cover.image is not None
+        assert cover.image.mime == "image/jpeg"
+        assert cover.image.size is not None
+
+    async def test_asks_the_articles_collection_filtered_to_one_edition(self, corpus, stub):
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.route().mock(side_effect=stub)
+            await corpus.get_edition_cover(EDITION_1_ID)
+
+        request = stub.requests[-1]
+        assert request.url.path == "/items/articles"
+        assert request.url.params["filter[articleEdition][_eq]"] == EDITION_1_ID
+        assert request.url.params["filter[articlePositionCover][_eq]"] == "1"
+        assert request.url.params["limit"] == "1"
+
+    async def test_an_empty_result_is_not_found_not_an_empty_cover(self, corpus, stub):
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.route().mock(side_effect=stub)
+            with pytest.raises(DocumentNotFound) as excinfo:
+                await corpus.get_edition_cover(EDITION_2_ID)
+        assert excinfo.value.source == "empty"
+
+    async def test_a_schema_without_the_edition_axis_declares_no_cover_capability(self):
+        """Honesty over optimism: the boot-time requirement check is only worth
+        running if a backend refuses to advertise what it cannot do."""
+        instance = DirectusCorpus(
+            base_url=BASE_URL,
+            api_key="test-key",
+            schema=DirectusSchema(article_edition_field=None),
+        )
+        try:
+            assert not instance.capabilities.supports(Capability.EDITION_COVER)
+            with pytest.raises(CapabilityNotSupported):
+                await instance.get_edition_cover(EDITION_1_ID)
+        finally:
+            await instance.aclose()
+
+    async def test_the_default_schema_does_declare_it(self, corpus):
+        assert corpus.capabilities.supports(Capability.EDITION_COVER)

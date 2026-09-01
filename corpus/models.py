@@ -77,6 +77,29 @@ class EditionRef(BaseModel):
     pdf: AssetRef | None = None
 
 
+class EditionCover(BaseModel):
+    """The front page as the archive presents it.
+
+    Deliberately not a projection of `Article`: the display headline a paper
+    prints on its front page is frequently *not* the cover story's own
+    headline, and an archive of front pages wants the former. On
+    pulse.ilmanifesto.it the two differ on most editions.
+
+    Reached only through `Corpus.get_edition_cover`. It is not a field on
+    `Edition`, because no backend can fill one without either a second request
+    or a fatter projection charged to every consumer that does not want it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    #: The cover story, when the backend links one. Absent is legitimate: a
+    #: CMS may carry the front page as its own record with no article behind it.
+    article_id: str | None = None
+    headline: str  # the DISPLAY headline, HTML-stripped
+    kicker: str = ""  # "" when absent, same folding rule as Article.kicker
+    image: AssetRef | None = None
+
+
 class ArticlePage(BaseModel):
     """One page of a listing. `next_cursor` is opaque; None = last page."""
 

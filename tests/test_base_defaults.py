@@ -63,6 +63,12 @@ class TestOptionalSurface:
         with pytest.raises(CapabilityNotSupported):
             await corpus.list_editions(EditionQuery())
 
+    async def test_edition_covers_are_refused_by_default(self, corpus):
+        """A web-native archive has no front page. Asking for one names the
+        gap instead of returning an empty cover."""
+        with pytest.raises(CapabilityNotSupported):
+            await corpus.get_edition_cover("e1")
+
     async def test_assets_are_refused_by_default(self, corpus):
         with pytest.raises(CapabilityNotSupported):
             corpus.stream_asset("f1")

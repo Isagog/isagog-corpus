@@ -15,7 +15,15 @@ from corpus.base import Corpus
 from corpus.capabilities import Capability, CorpusCapabilities
 from corpus.cursor import decode_cursor, encode_cursor
 from corpus.errors import CorpusUnavailable, DocumentNotFound
-from corpus.models import PUBLISHED, Article, ArticlePage, ArticleRef, Edition, EditionRef
+from corpus.models import (
+    PUBLISHED,
+    Article,
+    ArticlePage,
+    ArticleRef,
+    Edition,
+    EditionCover,
+    EditionRef,
+)
 from corpus.normalize import normalize_optional_date
 from corpus.query import ArticleOrder, ArticleQuery, EditionQuery
 from corpus.signals import (
@@ -121,6 +129,15 @@ class FakeCorpus(Corpus):
             )
             for e in selected
         )
+
+    async def get_edition_cover(self, edition_id: str) -> EditionCover:
+        self._require(Capability.EDITION_COVER)
+        edition = self._editions.get(edition_id)
+        if edition is None:
+            raise DocumentNotFound(f"no edition {edition_id}", source="empty")
+        if edition.cover is None:
+            raise DocumentNotFound(f"edition {edition_id} has no cover", source="empty")
+        return edition.cover
 
     # --- assets -----------------------------------------------------------
     async def stream_asset(self, asset_id: str) -> AsyncIterator[bytes]:

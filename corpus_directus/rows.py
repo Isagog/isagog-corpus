@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from corpus.errors import InvalidDocument
-from corpus.models import Article, ArticleRef, AssetRef, Edition, EditionRef
+from corpus.models import Article, ArticleRef, AssetRef, Edition, EditionCover, EditionRef
 from corpus.normalize import normalize_date, require_text, strip_html
 
 from corpus_directus.schema import (
@@ -80,6 +80,57 @@ def edition_ref_from_row(row: Mapping[str, Any], schema: DirectusSchema) -> Edit
         article_count=len(nested) if isinstance(nested, list) else None,
         pdf=_pdf_ref(row, schema),
     )
+
+
+def cover_from_row(row: Mapping[str, Any], schema: DirectusSchema) -> EditionCover:
+    """One cover-article row → the front page.
+
+    A row that reached this function matched the cover filter, so it *is* the
+    cover; an absent display headline therefore makes it unusable rather than
+    absent. That distinction matters on this archive: `referenceHeadline` is
+    null across the pre-2015 editions, and folding it to "" would write blank
+    captions into a consumer's database instead of naming the gap.
+    """
+    field = schema.cover_field
+    return EditionCover(
+        article_id=_optional_text(_pluck(row, field("article_id"))),
+        headline=require_text(_pluck(row, field("headline")), "cover headline"),
+        kicker=strip_html(_pluck(row, field("kicker"))),
+        image=asset_ref_from_file(_pluck(row, field("image")), schema),
+    )
+
+
+def asset_ref_from_file(value: Any, schema: DirectusSchema) -> AssetRef | None:
+    """An expanded `directus_files` row → `AssetRef`; a bare file id also works.
+
+    Tolerant on purpose: an unexpanded relation is a projection bug, not a
+    corrupt document, and losing the mime type is not worth failing a cover
+    over.
+    """
+    if not value:
+        return None
+    if not isinstance(value, Mapping):
+        return AssetRef(id=str(value))
+    file_id = value.get(schema.file_field("id"))
+    if not file_id:
+        return None
+    return AssetRef(
+        id=str(file_id),
+        filename=_optional_text(value.get(schema.file_field("filename"))),
+        mime=_optional_text(value.get(schema.file_field("mime"))),
+        size=_optional_int(value.get(schema.file_field("size"))),
+    )
+
+
+def _optional_int(value: Any) -> int | None:
+    """Directus returns `filesize` as a string. Anything unparseable is simply
+    absent — a size is metadata, never a reason to reject a document."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _nested_articles(row: Mapping[str, Any], schema: DirectusSchema) -> tuple[Article, ...]:

@@ -8,6 +8,7 @@ from corpus.models import (
     ArticleRef,
     AssetRef,
     Edition,
+    EditionCover,
     EditionRef,
 )
 from pydantic import ValidationError
@@ -103,3 +104,47 @@ class TestArticlePage:
 @pytest.mark.unit
 def test_published_status_constant():
     assert PUBLISHED == "published"
+
+
+def _cover(**overrides) -> EditionCover:
+    fields = {"headline": "Ristretto", "kicker": "Il punto del giorno"}
+    return EditionCover(**{**fields, **overrides})
+
+
+@pytest.mark.unit
+class TestEditionCover:
+    def test_is_frozen(self):
+        with pytest.raises(ValidationError):
+            _cover().headline = "mutated"
+
+    def test_optional_parts_default_to_absent(self):
+        cover = _cover()
+        assert cover.article_id is None
+        assert cover.image is None
+
+    def test_kicker_defaults_to_empty_not_none(self):
+        """Same folding rule as Article.kicker: absent optional text is "",
+        so no consumer needs an `or ''` at the call site."""
+        assert EditionCover(headline="Ristretto").kicker == ""
+
+    def test_headline_is_required(self):
+        """A cover with no display headline is not a cover — the adapter must
+        raise rather than hand back a blank one."""
+        with pytest.raises(ValidationError):
+            EditionCover(kicker="orphan")  # type: ignore[call-arg]
+
+    def test_carries_a_full_asset_ref(self):
+        cover = _cover(
+            article_id="550e8400-e29b-41d4-a716-446655440001",
+            image=AssetRef(id="f1", filename="cover.jpg", mime="image/jpeg", size=97698),
+        )
+        assert cover.image is not None
+        assert cover.image.mime == "image/jpeg"
+        assert cover.image.size == 97698
+
+
+@pytest.mark.unit
+def test_edition_cover_is_not_welded_onto_edition():
+    """`get_edition_cover` is the one way to reach a cover. Edition stays the
+    aggregate it was, so no existing consumer's projection grows."""
+    assert "cover" not in Edition.model_fields

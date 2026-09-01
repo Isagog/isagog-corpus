@@ -35,8 +35,9 @@ class InvalidQuery(Exception):
     """What Directus answers with 400 + code INVALID_QUERY."""
 
 
-def article_row(seeded) -> dict[str, Any]:
+def article_row(seed: CorpusSeed, seeded) -> dict[str, Any]:
     article = seeded.article
+    cover = _cover_of(seed, article.id)
     return {
         "id": article.id,
         "slug": article.slug,
@@ -47,6 +48,36 @@ def article_row(seeded) -> dict[str, Any]:
         "articleKicker": article.kicker or None,
         "articleBody": f"<div>{article.body}</div>",
         "articleSection": {"name": article.section} if article.section else None,
+        "articleEdition": seeded.edition_id,
+        # Cover vocabulary. Only the row the CMS marks as the front page
+        # carries it; every other article answers the cover filter with None.
+        "articlePositionCover": 1 if cover else None,
+        "referenceHeadline": f"<p>{cover.headline}</p>" if cover else None,
+        "articleFeaturedImage": (
+            {"image": file_row(cover.image)} if cover and cover.image else None
+        ),
+    }
+
+
+def _cover_of(seed: CorpusSeed, article_id: str):
+    return next(
+        (
+            e.cover
+            for e in seed.editions
+            if e.cover is not None and e.cover.article_id == article_id
+        ),
+        None,
+    )
+
+
+def file_row(asset) -> dict[str, Any]:
+    """A `directus_files` row. `filesize` is a *string* on the real instance —
+    the parser must coerce it, so the stub must not hand back an int."""
+    return {
+        "id": asset.id,
+        "type": asset.mime,
+        "filename_download": asset.filename,
+        "filesize": str(asset.size) if asset.size is not None else None,
     }
 
 
@@ -61,7 +92,7 @@ def edition_row(seed: CorpusSeed, edition, *, nested: bool) -> dict[str, Any]:
     }
     members = [s for s in seed.articles if s.edition_id == edition.id]
     row["articles"] = (
-        [article_row(s) for s in members] if nested else [s.article.id for s in members]
+        [article_row(seed, s) for s in members] if nested else [s.article.id for s in members]
     )
     return row
 
@@ -97,7 +128,7 @@ class DirectusStub:
 
     # --- collections ------------------------------------------------------
     def _article_rows(self) -> list[dict[str, Any]]:
-        return [article_row(s) for s in self.seed.articles]
+        return [article_row(self.seed, s) for s in self.seed.articles]
 
     def _edition_rows(self, *, nested: bool) -> list[dict[str, Any]]:
         return [edition_row(self.seed, e, nested=nested) for e in self.seed.editions]

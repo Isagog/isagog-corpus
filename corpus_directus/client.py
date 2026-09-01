@@ -33,7 +33,7 @@ from corpus.errors import (
     DocumentNotFound,
     InvalidDocument,
 )
-from corpus.models import Article, ArticlePage, ArticleRef, Edition, EditionRef
+from corpus.models import Article, ArticlePage, ArticleRef, Edition, EditionCover, EditionRef
 from corpus.query import ArticleQuery, EditionQuery
 from corpus.signals import ChangeSignal
 from pydantic import SecretStr
@@ -43,6 +43,7 @@ from corpus_directus.compile import (
     article_ref_projection,
     chunk_ids,
     compile_article_query,
+    compile_cover_query,
     compile_edition_query,
     edition_projection,
 )
@@ -51,6 +52,7 @@ from corpus_directus.inbound import parse_change
 from corpus_directus.rows import (
     article_from_row,
     article_ref_from_row,
+    cover_from_row,
     edition_from_row,
     edition_ref_from_row,
 )
@@ -94,12 +96,16 @@ class DirectusCorpus(Corpus):
         self._schema = schema
         self._timeouts = timeouts
         self._max_ids = max_ids_per_query
+        supported = _BACKEND_CAPABILITIES
+        if result_webhook:
+            supported = supported | {Capability.RESULT_WEBHOOK}
+        if not schema.supports_covers:
+            # Honesty over optimism: an instance whose schema cannot reach a
+            # cover must not advertise one, or the boot-time requirement check
+            # stops being worth running.
+            supported = supported - {Capability.EDITION_COVER}
         self._capabilities = CorpusCapabilities(
-            supported=(
-                _BACKEND_CAPABILITIES | {Capability.RESULT_WEBHOOK}
-                if result_webhook
-                else _BACKEND_CAPABILITIES
-            ),
+            supported=supported,
             max_ids_per_query=max_ids_per_query,
             id_format="uuid" if schema.id_is_uuid else "opaque",
         )
@@ -233,6 +239,22 @@ class DirectusCorpus(Corpus):
             kind="http",
             retryable=False,
         )
+
+    async def get_edition_cover(self, edition_id: str) -> EditionCover:
+        """One request: the cover row with its file record already expanded."""
+        self._require(Capability.EDITION_COVER)
+        context = f"cover of edition {edition_id}"
+        rows = await self._get_many(
+            f"/items/{self._schema.articles_collection}",
+            compile_cover_query(edition_id, self._schema),
+            context,
+        )
+        if not rows:
+            # Indistinguishable here from "no such edition", and deliberately
+            # so: both mean there is no front page to return, and Directus
+            # answers a filtered listing with 200 + [] either way.
+            raise DocumentNotFound(f"{context}: no cover article", source="empty")
+        return cover_from_row(rows[0], self._schema)
 
     # --- assets -----------------------------------------------------------
     async def stream_asset(self, asset_id: str) -> AsyncIterator[bytes]:

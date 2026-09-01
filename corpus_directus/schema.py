@@ -33,6 +33,26 @@ EDITION_FIELDS: Mapping[str, str] = {
     "pdf": "editionPdf.pdf",
 }
 
+#: The front page. Its fields live on the cover *article*, not on the edition
+#: row: `referenceHeadline` is the display headline il manifesto prints on the
+#: cover, which is routinely not the cover story's own `headline`.
+COVER_FIELDS: Mapping[str, str] = {
+    "article_id": "id",
+    "headline": "referenceHeadline",
+    "kicker": "articleKicker",
+    "image": "articleFeaturedImage.image",
+}
+
+#: `directus_files`. Projecting these through the image relation is what makes
+#: an `AssetRef` arrive complete in one request — a caller deriving a file
+#: extension never has to fetch the bytes to learn the type.
+FILE_FIELDS: Mapping[str, str] = {
+    "id": "id",
+    "mime": "type",
+    "filename": "filename_download",
+    "size": "filesize",
+}
+
 #: Fields a row must carry for the corresponding model to be constructible.
 REQUIRED_ARTICLE_FIELDS = ("id", "slug", "publish_date", "headline", "body")
 REQUIRED_EDITION_FIELDS = ("id", "date")
@@ -48,10 +68,19 @@ class DirectusSchema(BaseModel):
     article_fields: Mapping[str, str] = ARTICLE_FIELDS
     edition_fields: Mapping[str, str] = EDITION_FIELDS
     published_status: str = "published"
-    #: Reverse relation from an article to its edition. No production call site
-    #: filters that way, so it stays undeclared until an instance names it —
-    #: `ArticleQuery(edition_id=...)` is refused rather than guessed.
-    article_edition_field: str | None = None
+    #: Reverse relation from an article to its edition. Verified against
+    #: pulse.ilmanifesto.it on 2026-09-01: `filter[articleEdition][_eq]=<uuid>`
+    #: returns that edition's articles. An instance that names it differently
+    #: overrides it; one that cannot express the axis sets it to None, and both
+    #: `ArticleQuery(edition_id=...)` and covers are then refused rather than
+    #: guessed.
+    article_edition_field: str | None = "articleEdition"
+    cover_fields: Mapping[str, str] = COVER_FIELDS
+    file_fields: Mapping[str, str] = FILE_FIELDS
+    #: Equality filters that single out the cover row within an edition. A
+    #: mapping rather than one field so an instance marking its cover with two
+    #: conditions stays a constant instead of a subclass.
+    cover_filter: Mapping[str, str] = {"articlePositionCover": "1"}
     #: `id_format="uuid"` is a real constraint on this CMS; a differently
     #: configured instance turns it off rather than forking the parser.
     id_is_uuid: bool = True
@@ -61,6 +90,18 @@ class DirectusSchema(BaseModel):
 
     def edition_field(self, name: str) -> str:
         return self.edition_fields[name]
+
+    def cover_field(self, name: str) -> str:
+        return self.cover_fields[name]
+
+    def file_field(self, name: str) -> str:
+        return self.file_fields[name]
+
+    @property
+    def supports_covers(self) -> bool:
+        """A cover is reached by filtering articles down to one edition, so an
+        instance that cannot express that axis has no covers to declare."""
+        return self.article_edition_field is not None and bool(self.cover_fields)
 
 
 MANIFESTO_SCHEMA = DirectusSchema()
