@@ -11,6 +11,7 @@ themselves.
 from __future__ import annotations
 
 import os
+from datetime import date, timedelta
 
 import pytest
 from corpus.errors import DocumentNotFound
@@ -64,7 +65,14 @@ async def test_pagination_walks_without_repeating(corpus):
 
 
 async def test_the_edition_schema_still_parses(corpus):
-    editions = await corpus.list_editions(EditionQuery(require_pdf=True), page_size=5)
+    # Date-bounded on purpose. This archive holds 19 205 editions back to 1971,
+    # so an unbounded walk at a small page size is thousands of requests. The
+    # window still spans several pages, so paging is exercised, not skipped.
+    today = date.today()
+    editions = await corpus.list_editions(
+        EditionQuery(date_from=today - timedelta(days=60), date_to=today, require_pdf=True),
+        page_size=20,
+    )
     if not editions:
         pytest.skip("no editions with a PDF on the staging instance")
 

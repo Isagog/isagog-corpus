@@ -133,8 +133,23 @@ class DirectusStub:
 
 
 def _not_found() -> httpx.Response:
+    """What Directus actually answers for a document that is not there.
+
+    Not a 404: this CMS hides existence, and returns the same 403 FORBIDDEN
+    for a missing document, one the token may not read, and a collection it
+    may not read at all. A stub answering 404 here would let the adapter map
+    403 to an auth failure and still look correct.
+    """
     return httpx.Response(
-        404, json={"errors": [{"message": "not found", "extensions": {"code": "FORBIDDEN"}}]}
+        403,
+        json={
+            "errors": [
+                {
+                    "message": "You don't have permission to access this.",
+                    "extensions": {"code": "FORBIDDEN"},
+                }
+            ]
+        },
     )
 
 

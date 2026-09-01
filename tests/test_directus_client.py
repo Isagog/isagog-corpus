@@ -158,7 +158,9 @@ class TestErrorTable:
             (httpx.Response(200, json={"data": []}), DocumentNotFound, False),
             (httpx.Response(404), DocumentNotFound, False),
             (httpx.Response(401), CorpusAuthError, False),
-            (httpx.Response(403), CorpusAuthError, False),
+            # 403 on a single document is Directus hiding existence, not a
+            # credentials failure — see TestForbiddenIsScopeDependent.
+            (httpx.Response(403), DocumentNotFound, False),
             (httpx.Response(400), CorpusUnavailable, False),
             (httpx.Response(500), CorpusUnavailable, True),
             (httpx.Response(502), CorpusUnavailable, True),
@@ -364,3 +366,65 @@ class TestKeysetPaginationOverTies:
             await instance.aclose()
         assert excinfo.value.retryable is False
         assert "share the timestamp" in str(excinfo.value)
+
+
+@pytest.mark.integration
+class TestForbiddenIsScopeDependent:
+    """Directus answers 403 FORBIDDEN for a document that does not exist, one
+    the token may not read, and a collection it may not read at all — the same
+    body every time. Only 401 means the credentials were rejected. The
+    request's shape is the only thing that makes the 403 interpretable."""
+
+    async def test_a_forbidden_document_is_not_found(self, corpus):
+        with respx.mock:
+            respx.get(ARTICLE_URL).mock(return_value=httpx.Response(403))
+            with pytest.raises(DocumentNotFound) as excinfo:
+                await corpus.get_article(ARTICLE_1_ID)
+        assert excinfo.value.source == "status"
+
+    async def test_a_forbidden_asset_is_not_found(self, corpus):
+        with respx.mock:
+            respx.get(f"{BASE_URL}/assets/{PDF_ASSET_ID}").mock(return_value=httpx.Response(403))
+            with pytest.raises(DocumentNotFound):
+                await corpus.fetch_asset(PDF_ASSET_ID, max_bytes=1_000)
+
+    async def test_a_forbidden_listing_stays_an_auth_failure(self, corpus):
+        """Degrading this to an empty page would let a pipeline process nothing
+        and report success — the failure mode a misconfigured collection
+        permission actually produces."""
+        with respx.mock:
+            respx.get(f"{BASE_URL}/items/articles").mock(return_value=httpx.Response(403))
+            with pytest.raises(CorpusAuthError):
+                await corpus.search_articles(ArticleQuery(page_size=5))
+
+    async def test_a_forbidden_health_probe_stays_an_auth_failure(self, corpus):
+        with respx.mock:
+            respx.get(f"{BASE_URL}/users/me").mock(return_value=httpx.Response(403))
+            with pytest.raises(CorpusAuthError):
+                await corpus.ping()
+
+    async def test_rejected_credentials_are_still_an_auth_failure(self, corpus):
+        """401 is unambiguous, and must not be softened by the 403 rule."""
+        with respx.mock:
+            respx.get(ARTICLE_URL).mock(return_value=httpx.Response(401))
+            with pytest.raises(CorpusAuthError):
+                await corpus.get_article(ARTICLE_1_ID)
+
+
+@pytest.mark.integration
+class TestEditionListingIsBounded:
+    async def test_a_walk_that_never_finishes_raises_instead_of_truncating(self, corpus, stub):
+        """Returning the rows collected so far would be a short listing that
+        looks complete — the defect the exhaustive walk exists to prevent."""
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.route().mock(side_effect=stub)
+            with pytest.raises(CorpusUnavailable) as excinfo:
+                await corpus.list_editions(EditionQuery(), page_size=1, max_pages=2)
+        assert excinfo.value.retryable is False
+        assert "date_from" in str(excinfo.value)
+
+    async def test_a_walk_that_finishes_is_unaffected(self, corpus, stub):
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.route().mock(side_effect=stub)
+            editions = await corpus.list_editions(EditionQuery(), page_size=1, max_pages=50)
+        assert len(editions) == len(DEFAULT_SEED.editions)

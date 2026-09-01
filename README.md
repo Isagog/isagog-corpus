@@ -135,7 +135,7 @@ The gap between a new backend's capability set and each consumer's
 
 ```bash
 uv sync --group dev
-uv run pytest --cov                 # 362 tests, contract suite runs twice
+uv run pytest --cov                 # 385 tests, contract suite runs twice
 uv run ruff check . && uv run pyright
 ./scripts/check_boundaries.sh       # temporalio / httpx / vendor-vocabulary bans
 ```

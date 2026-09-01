@@ -46,7 +46,7 @@ from corpus_directus.compile import (
     compile_edition_query,
     edition_projection,
 )
-from corpus_directus.errors import from_status, from_transport_error
+from corpus_directus.errors import Scope, from_status, from_transport_error
 from corpus_directus.inbound import parse_change
 from corpus_directus.rows import (
     article_from_row,
@@ -60,6 +60,13 @@ from corpus_directus.settings import DEFAULT_TIMEOUTS, DirectusCorpusSettings, T
 logger = logging.getLogger(__name__)
 
 DEFAULT_EDITION_PAGE_SIZE = 100
+
+#: A runaway guard, not a result limit. `list_editions` walks to exhaustion by
+#: design, and this archive holds 19 205 editions back to 1971 — so a caller
+#: who forgets a date bound and passes a small page size issues thousands of
+#: requests before anyone notices. At the default page size this allows
+#: 100 000 editions, far beyond any real archive.
+DEFAULT_MAX_EDITION_PAGES = 1000
 
 _BACKEND_CAPABILITIES = frozenset(Capability) - {Capability.RESULT_WEBHOOK}
 
@@ -195,15 +202,23 @@ class DirectusCorpus(Corpus):
         return edition_from_row(row, self._schema)
 
     async def list_editions(
-        self, query: EditionQuery, *, page_size: int = DEFAULT_EDITION_PAGE_SIZE
+        self,
+        query: EditionQuery,
+        *,
+        page_size: int = DEFAULT_EDITION_PAGE_SIZE,
+        max_pages: int = DEFAULT_MAX_EDITION_PAGES,
     ) -> tuple[EditionRef, ...]:
         """Offset-paged to exhaustion. Directus has no keyset order here that
         beats `editionDate`, and a truncated listing is how memaflow2 silently
-        lost editions."""
+        lost editions.
+
+        `max_pages` bounds the walk itself, never the result. Hitting it raises
+        rather than returning what was collected so far: a short listing that
+        looks complete is the defect this exhaustive walk exists to prevent.
+        """
         self._require(Capability.EDITIONS)
         editions: list[EditionRef] = []
-        page = 1
-        while True:
+        for page in range(1, max_pages + 1):
             params = compile_edition_query(query, self._schema, page=page, page_size=page_size)
             rows = await self._get_many(
                 f"/items/{self._schema.editions_collection}", params, "edition listing"
@@ -211,7 +226,13 @@ class DirectusCorpus(Corpus):
             editions.extend(_edition_refs(rows, self._schema))
             if len(rows) < page_size:
                 return tuple(editions)
-            page += 1
+        raise CorpusUnavailable(
+            f"edition listing did not finish within {max_pages} pages of {page_size} "
+            f"({len(editions)} rows so far) — bound it with EditionQuery date_from/date_to, "
+            f"or raise page_size",
+            kind="http",
+            retryable=False,
+        )
 
     # --- assets -----------------------------------------------------------
     async def stream_asset(self, asset_id: str) -> AsyncIterator[bytes]:
@@ -223,7 +244,10 @@ class DirectusCorpus(Corpus):
                 if response.status_code >= 400:
                     await response.aread()
                     raise from_status(
-                        response.status_code, context, response.headers.get("Retry-After")
+                        response.status_code,
+                        context,
+                        response.headers.get("Retry-After"),
+                        scope="document",
                     )
                 async for chunk in response.aiter_bytes():
                     yield chunk
@@ -251,14 +275,24 @@ class DirectusCorpus(Corpus):
         await self._client.aclose()
 
     # --- internals --------------------------------------------------------
-    async def _get_json(self, path: str, params: Mapping[str, str] | None, context: str) -> Any:
+    async def _get_json(
+        self,
+        path: str,
+        params: Mapping[str, str] | None,
+        context: str,
+        *,
+        scope: Scope = "collection",
+    ) -> Any:
         try:
             response = await self._client.get(path, params=dict(params or {}))
         except Exception as exc:
             raise from_transport_error(exc, context) from None
         if response.status_code >= 400:
             raise from_status(
-                response.status_code, context, response.headers.get("Retry-After")
+                response.status_code,
+                context,
+                response.headers.get("Retry-After"),
+                scope=scope,
             ) from None
         try:
             return response.json()
@@ -268,7 +302,7 @@ class DirectusCorpus(Corpus):
     async def _get_one(
         self, path: str, params: Mapping[str, str], context: str
     ) -> Mapping[str, Any]:
-        payload = await self._get_json(path, params, context)
+        payload = await self._get_json(path, params, context, scope="document")
         data = payload.get("data") if isinstance(payload, Mapping) else None
         if not data:
             # A 200 carrying no data is not the same event as a 404, and the
