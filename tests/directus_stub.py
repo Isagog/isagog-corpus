@@ -21,6 +21,19 @@ from corpus.testing.fixtures import CorpusSeed
 
 _BRACKETS = re.compile(r"\[([^\]]*)\]")
 
+#: Directus refuses ordering operators on a `uuid` column:
+#:
+#:     Invalid query. "uuid" field type does not contain the "_lt" filter operator.
+#:
+#: The stub models that, because a stub more permissive than the real backend
+#: is how keyset pagination stayed green here while 400ing in production.
+_UUID_FIELDS = frozenset({"id"})
+_ORDERING_OPS = frozenset({"_lt", "_lte", "_gt", "_gte"})
+
+
+class InvalidQuery(Exception):
+    """What Directus answers with 400 + code INVALID_QUERY."""
+
 
 def article_row(seeded) -> dict[str, Any]:
     article = seeded.article
@@ -97,7 +110,20 @@ class DirectusStub:
 
     def _list(self, rows: list[dict[str, Any]], params: Mapping[str, str]) -> httpx.Response:
         tree = _filter_tree(params)
-        selected = [row for row in rows if _matches(tree, row)]
+        try:
+            selected = [row for row in rows if _matches(tree, row)]
+        except InvalidQuery as err:
+            return httpx.Response(
+                400,
+                json={
+                    "errors": [
+                        {
+                            "message": f"Invalid query. {err}",
+                            "extensions": {"reason": str(err), "code": "INVALID_QUERY"},
+                        }
+                    ]
+                },
+            )
         selected = _sorted(selected, params.get("sort"))
 
         limit = int(params.get("limit", 100))
@@ -134,6 +160,10 @@ def _matches(node: Mapping[str, Any], row: Mapping[str, Any], path: tuple[str, .
             if not all(_matches(branch, row) for branch in sub.values()):
                 return False
         elif key.startswith("_"):
+            if path and path[-1] in _UUID_FIELDS and key in _ORDERING_OPS:
+                raise InvalidQuery(
+                    f'"uuid" field type does not contain the "{key}" filter operator'
+                )
             if not _apply(key, _pluck(row, path), sub):
                 return False
         elif not _matches(sub, row, (*path, key)):
@@ -149,6 +179,8 @@ def _apply(op: str, value: Any, literal: str) -> bool:
             return str(value) != literal
         case "_in":
             return value is not None and str(value) in literal.split(",")
+        case "_nin":
+            return value is not None and str(value) not in literal.split(",")
         case "_gte":
             return value is not None and str(value) >= literal
         case "_lte":

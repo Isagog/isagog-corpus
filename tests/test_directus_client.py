@@ -13,8 +13,16 @@ from corpus.errors import (
     DocumentNotFound,
     InvalidDocument,
 )
+from corpus.models import Article
 from corpus.query import ArticleQuery, EditionQuery
-from corpus.testing.fixtures import ARTICLE_1_ID, DEFAULT_SEED, EDITION_1_ID, PDF_ASSET_ID
+from corpus.testing.fixtures import (
+    ARTICLE_1_ID,
+    DEFAULT_SEED,
+    EDITION_1_ID,
+    PDF_ASSET_ID,
+    CorpusSeed,
+    SeedArticle,
+)
 from corpus_directus.client import DirectusCorpus
 from corpus_directus.settings import Timeouts
 
@@ -258,3 +266,101 @@ class TestErrorTable:
             with pytest.raises(CorpusUnavailable) as excinfo:
                 await corpus.get_edition(EDITION_1_ID)
         assert excinfo.value.retryable is True
+
+
+def _tied_seed(count: int) -> CorpusSeed:
+    """Every article on the same day, so the stub stamps them all with the
+    identical `datePublished`. This is not contrived: an edition's articles are
+    written to this CMS within the same second."""
+    return CorpusSeed(
+        articles=tuple(
+            SeedArticle(
+                article=Article(
+                    id=f"550e8400-e29b-41d4-a716-44665544{n:04d}",
+                    slug=f"articolo-{n}",
+                    publish_date="2024-02-01",
+                    author="",
+                    headline=f"Titolo {n}",
+                    kicker="",
+                    body="B" * 400,
+                )
+            )
+            for n in range(1, count + 1)
+        ),
+        editions=(),
+        assets={},
+    )
+
+
+@pytest.mark.integration
+class TestKeysetPaginationOverTies:
+    async def test_walks_a_whole_tie_group_without_skipping_or_repeating(self):
+        """The regression guard for the uuid keyset defect.
+
+        Ten articles at one instant, paged one at a time: the tiebreaker has to
+        carry every id already served at that instant into the next request,
+        because Directus cannot compare uuids.
+        """
+        seed = _tied_seed(10)
+        instance = DirectusCorpus(base_url=BASE_URL, api_key="test-key")
+        try:
+            with respx.mock(base_url=BASE_URL) as mock:
+                mock.route().mock(side_effect=DirectusStub(seed))
+                walked = [ref.id async for ref in instance.iter_articles(ArticleQuery(page_size=1))]
+        finally:
+            await instance.aclose()
+
+        assert len(walked) == len(set(walked)), "a row was served twice"
+        assert set(walked) == {s.article.id for s in seed.articles}, "pagination skipped rows"
+
+    async def test_the_tie_group_never_compares_uuids(self):
+        """Not one request may carry an ordering operator on `id` — that is the
+        400 this fix exists to remove."""
+        stub = DirectusStub(_tied_seed(6))
+        instance = DirectusCorpus(base_url=BASE_URL, api_key="test-key")
+        try:
+            with respx.mock(base_url=BASE_URL) as mock:
+                mock.route().mock(side_effect=stub)
+                _ = [ref.id async for ref in instance.iter_articles(ArticleQuery(page_size=2))]
+        finally:
+            await instance.aclose()
+
+        offending = [
+            key
+            for request in stub.requests
+            for key in request.url.params
+            if "[id][" in key and any(op in key for op in ("_lt", "_lte", "_gt", "_gte"))
+        ]
+        assert not offending, offending
+
+    async def test_the_tie_group_resets_when_the_instant_moves(self):
+        """Otherwise the exclusion set would grow for the whole walk instead of
+        staying as small as one timestamp's worth of articles."""
+        stub = DirectusStub(DEFAULT_SEED)
+        instance = DirectusCorpus(base_url=BASE_URL, api_key="test-key")
+        try:
+            with respx.mock(base_url=BASE_URL) as mock:
+                mock.route().mock(side_effect=stub)
+                _ = [ref.id async for ref in instance.iter_articles(ArticleQuery(page_size=1))]
+        finally:
+            await instance.aclose()
+
+        widest = max(
+            len(request.url.params.get("filter[_or][1][_and][1][id][_nin]", "").split(","))
+            for request in stub.requests
+        )
+        assert widest <= 2, "the exclusion set outgrew the largest tie group in the seed"
+
+    async def test_a_tie_group_wider_than_the_url_budget_fails_loudly(self):
+        """Truncating it would silently skip or repeat rows — the precise defect
+        keyset paging exists to prevent."""
+        instance = DirectusCorpus(base_url=BASE_URL, api_key="test-key", max_ids_per_query=2)
+        try:
+            with respx.mock(base_url=BASE_URL) as mock:
+                mock.route().mock(side_effect=DirectusStub(_tied_seed(6)))
+                with pytest.raises(CorpusUnavailable) as excinfo:
+                    _ = [ref.id async for ref in instance.iter_articles(ArticleQuery(page_size=1))]
+        finally:
+            await instance.aclose()
+        assert excinfo.value.retryable is False
+        assert "share the timestamp" in str(excinfo.value)

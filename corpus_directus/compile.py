@@ -140,16 +140,34 @@ def _path(dotted: str) -> str:
 def _keyset(
     position: Mapping[str, object], date_field: str, id_field: str, descending: bool
 ) -> dict[str, str]:
-    """Rows strictly after `position` in the requested order.
+    """Rows after `position` in the requested order.
 
-    `(publish_date, id)` is a total order, so the page boundary is stable even
-    while the collection is being written.
+    The tiebreaker is an *exclusion set*, not `id > last`, because Directus
+    refuses ordering operators on a `uuid` column:
+
+        Invalid query. "uuid" field type does not contain the "_lt" filter
+        operator.
+
+    `_eq`, `_neq`, `_in` and `_nin` are the only comparisons every Directus
+    column type accepts, so "after this row" is expressed as "older than this
+    instant, or at this instant but not one of the ids already served". That
+    keeps the boundary stable while the collection is being written — which is
+    the whole reason for keyset paging — without asking the backend for an
+    operator it does not have.
+
+    `publish_date` alone is not unique on this archive: an edition stamps many
+    articles within the same second, so dropping the tiebreaker entirely would
+    skip or repeat exactly those rows.
     """
     last_date = str(position.get("d", ""))
-    last_id = str(position.get("i", ""))
     op = "_lt" if descending else "_gt"
+    excluded = position.get("x")
+    if not isinstance(excluded, list) or not excluded:
+        # Nothing served at this instant yet: a strict comparison is exact, and
+        # a one-branch _or would only make the URL longer.
+        return {f"filter[{date_field}][{op}]": last_date}
     return {
         f"filter[_or][0][{date_field}][{op}]": last_date,
         f"filter[_or][1][_and][0][{date_field}][_eq]": last_date,
-        f"filter[_or][1][_and][1][{id_field}][{op}]": last_id,
+        f"filter[_or][1][_and][1][{id_field}][_nin]": ",".join(str(i) for i in excluded),
     }
