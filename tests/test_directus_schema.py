@@ -1,7 +1,7 @@
 """Schema as data: the vendor vocabulary lives in one frozen object."""
 
 import pytest
-from corpus_directus.schema import MANIFESTO_SCHEMA, DirectusSchema
+from corpus_directus.schema import MANIFESTO_SCHEMA, MANIFESTO_WP_SCHEMA, DirectusSchema
 from pydantic import ValidationError
 
 
@@ -70,3 +70,18 @@ class TestDirectusSchema:
         )
         assert other.cover_field("headline") == "frontPageTitle"
         assert MANIFESTO_SCHEMA.cover_field("headline") == "referenceHeadline"
+
+
+@pytest.mark.unit
+class TestEditionSeries:
+    def test_the_default_schema_spans_every_series(self):
+        assert MANIFESTO_SCHEMA.edition_filter == {}
+
+    def test_the_wp_schema_is_the_only_one_that_narrows(self):
+        """pulse.ilmanifesto.it holds four overlapping imported series, so a
+        date can resolve to more than one edition. `wp` is the live one and is
+        unambiguous across its whole range."""
+        assert MANIFESTO_WP_SCHEMA.edition_filter == {"syncSource": "wp"}
+
+    def test_the_two_schemas_differ_only_in_that(self):
+        assert MANIFESTO_WP_SCHEMA.model_copy(update={"edition_filter": {}}) == MANIFESTO_SCHEMA

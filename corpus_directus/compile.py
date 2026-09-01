@@ -151,6 +151,8 @@ def compile_edition_query(
         params[f"filter[{date_field}][_gte]"] = query.date_from.isoformat()
     if query.date_to is not None:
         params[f"filter[{date_field}][_lte]"] = query.date_to.isoformat()
+    for field, value in schema.edition_filter.items():
+        params[f"filter[{field}][_eq]"] = value
     if query.require_pdf:
         # The null check belongs on the relation, not on the file id inside it:
         # `editionPdf.pdf` filters as `filter[editionPdf][_null]=false`.

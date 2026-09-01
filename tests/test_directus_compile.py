@@ -16,7 +16,7 @@ from corpus_directus.compile import (
     compile_edition_query,
     edition_projection,
 )
-from corpus_directus.schema import MANIFESTO_SCHEMA, DirectusSchema
+from corpus_directus.schema import MANIFESTO_SCHEMA, MANIFESTO_WP_SCHEMA, DirectusSchema
 
 
 def _params(query: ArticleQuery, **kwargs) -> dict[str, str]:
@@ -242,3 +242,29 @@ class TestCoverQueryCompilation:
         assert params["filter[issue][_eq]"] == "ed-1"
         assert params["filter[isFrontPage][_eq]"] == "true"
         assert "leadImage.file.type" in params["fields"].split(",")
+
+
+@pytest.mark.unit
+class TestEditionSourceFilter:
+    def test_no_filter_by_default(self):
+        """An instance holding a single series must not have one imposed."""
+        params = compile_edition_query(EditionQuery(), MANIFESTO_SCHEMA)
+        assert not [k for k in params if "syncSource" in k]
+
+    def test_the_wp_schema_narrows_to_one_series(self):
+        params = compile_edition_query(EditionQuery(), MANIFESTO_WP_SCHEMA)
+        assert params["filter[syncSource][_eq]"] == "wp"
+
+    def test_the_filter_composes_with_the_other_axes(self):
+        params = compile_edition_query(
+            EditionQuery(date_exact=date(2024, 1, 15), require_pdf=True), MANIFESTO_WP_SCHEMA
+        )
+        assert params["filter[syncSource][_eq]"] == "wp"
+        assert params["filter[editionDate][_eq]"] == "2024-01-15"
+        assert params["filter[editionPdf][_null]"] == "false"
+
+    def test_an_instance_can_name_its_own_series_field(self):
+        schema = DirectusSchema(edition_filter={"origin": "print", "status": "live"})
+        params = compile_edition_query(EditionQuery(), schema)
+        assert params["filter[origin][_eq]"] == "print"
+        assert params["filter[status][_eq]"] == "live"
