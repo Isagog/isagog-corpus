@@ -18,6 +18,7 @@ from corpus.errors import DocumentNotFound, InvalidDocument
 from corpus.models import Article
 from corpus.query import ArticleQuery, EditionQuery
 from corpus_directus.client import DirectusCorpus
+from corpus_directus.schema import MANIFESTO_WP_SCHEMA
 
 BASE_URL = os.getenv("CORPUS_STAGING_BASE_URL", "")
 API_KEY = os.getenv("CORPUS_STAGING_API_KEY", "")
@@ -138,3 +139,38 @@ async def test_the_cover_headline_is_not_the_article_headline(corpus):
 async def test_a_missing_document_is_not_found(corpus):
     with pytest.raises(DocumentNotFound):
         await corpus.get_article("00000000-0000-4000-8000-000000000000")
+
+
+@pytest.fixture
+async def wp_corpus():
+    """The single-series view: editions narrowed to the live `wp` import."""
+    instance = DirectusCorpus(base_url=BASE_URL, api_key=API_KEY, schema=MANIFESTO_WP_SCHEMA)
+    yield instance
+    await instance.aclose()
+
+
+async def test_the_default_schema_still_sees_overlapping_series(corpus):
+    """The reason MANIFESTO_WP_SCHEMA exists. If this ever stops finding a
+    collision, the instance was cleaned up and the narrowing may be dropped."""
+    editions = await corpus.list_editions(
+        EditionQuery(date_from=date(2020, 1, 1), date_to=date(2020, 1, 31))
+    )
+    if not editions:
+        pytest.skip("no 2020 editions on the staging instance")
+    dates = [e.date for e in editions]
+    assert len(dates) != len(set(dates)), "expected overlapping edition series in 2020"
+
+
+async def test_the_wp_schema_gives_one_edition_per_date(wp_corpus):
+    """The property the whole single-series design rests on: within `wp`, a
+    date resolves to exactly one edition — checked across four eras."""
+    for start, end in (
+        (date(2013, 4, 1), date(2013, 4, 30)),
+        (date(2018, 6, 1), date(2018, 6, 30)),
+        (date(2020, 1, 1), date(2020, 1, 31)),
+        (date(2026, 8, 1), date(2026, 8, 31)),
+    ):
+        editions = await wp_corpus.list_editions(EditionQuery(date_from=start, date_to=end))
+        dates = [e.date for e in editions]
+        assert dates, f"no wp editions between {start} and {end}"
+        assert len(dates) == len(set(dates)), f"duplicate edition dates in {start:%Y-%m}"

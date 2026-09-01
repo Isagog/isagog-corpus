@@ -10,7 +10,7 @@ constant; a different CMS is a new adapter passing the same contract suite.
 from corpus_directus.client import DirectusCorpus
 from corpus_directus.inbound import parse_change
 from corpus_directus.notifier import DirectusFlowNotifier
-from corpus_directus.schema import MANIFESTO_SCHEMA, DirectusSchema
+from corpus_directus.schema import MANIFESTO_SCHEMA, MANIFESTO_WP_SCHEMA, DirectusSchema
 from corpus_directus.settings import (
     DirectusCorpusSettings,
     DirectusNotifierSettings,
@@ -19,6 +19,7 @@ from corpus_directus.settings import (
 
 __all__ = [
     "MANIFESTO_SCHEMA",
+    "MANIFESTO_WP_SCHEMA",
     "DirectusCorpus",
     "DirectusCorpusSettings",
     "DirectusFlowNotifier",

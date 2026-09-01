@@ -32,7 +32,7 @@ corpus/                 the port
     contract.py         CorpusContractSuite — the executable adapter spec
 
 corpus_directus/        the specialization
-  schema.py             DirectusSchema + MANIFESTO_SCHEMA (incl. cover vocabulary)
+  schema.py             DirectusSchema + MANIFESTO_SCHEMA / MANIFESTO_WP_SCHEMA
   rows.py               row dict → models (pure)
   compile.py            queries → filter[…]/fields/sort params (pure)
   errors.py             native failure → taxonomy
@@ -100,6 +100,34 @@ It is reached only through `get_edition_cover`, deliberately not as a field on
 `Edition`: no backend can populate one without either a second request or a
 fatter projection charged to every consumer that does not want it.
 
+### Overlapping edition series
+
+`pulse.ilmanifesto.it` holds four imported edition series, and they overlap:
+
+| series | editions | range |
+|---|---|---|
+| `mema` | 7188 | 1971-04-28 → 2008-11-10 |
+| `athenaPre2002` | 2129 | 1995-01-17 → 2001-12-30 |
+| `athena` | 5723 | 2001-02-06 → 2023-12-31 |
+| `wp` | 4165 | 2013-03-27 → today |
+
+Measured 2026-09-01. So a date can resolve to more than one edition — *every*
+date in 2018–2023 does — and nothing in the row says which is authoritative.
+
+`wp` is the live series: it alone is still being written, and across its whole
+range it has 4165 editions on 4165 distinct dates. A consumer that needs "the
+edition of this date" to have one answer takes the narrowed schema:
+
+```python
+from corpus_directus import DirectusCorpus, MANIFESTO_WP_SCHEMA
+
+corpus = DirectusCorpus(base_url=..., api_key=..., schema=MANIFESTO_WP_SCHEMA)
+```
+
+`MANIFESTO_SCHEMA` is unchanged and still spans every series, so nothing that
+wants the deep historical archive is affected. The narrowing is one
+`edition_filter` constant, not a code path.
+
 `fetch_asset` has no default `max_bytes` on purpose: the unguarded whole-PDF
 buffer is a defect no caller can now reproduce. Pagination is keyset-based and
 the cursor is opaque — consumers cannot tell, and must not care.
@@ -163,7 +191,7 @@ The gap between a new backend's capability set and each consumer's
 
 ```bash
 uv sync --group dev
-uv run pytest --cov                 # 440 tests, contract suite runs twice
+uv run pytest --cov                 # 449 tests, contract suite runs twice
 uv run ruff check . && uv run pyright
 ./scripts/check_boundaries.sh       # temporalio / httpx / vendor-vocabulary bans
 ```
