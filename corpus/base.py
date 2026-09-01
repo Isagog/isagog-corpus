@@ -19,7 +19,7 @@ from typing import Any
 
 from corpus.capabilities import Capability, CorpusCapabilities, CorpusRequirements
 from corpus.errors import CapabilityNotSupported, InvalidDocument
-from corpus.models import Article, ArticlePage, ArticleRef, Edition, EditionRef
+from corpus.models import Article, ArticlePage, ArticleRef, Edition, EditionCover, EditionRef
 from corpus.query import ArticleQuery, EditionQuery
 from corpus.signals import ChangeSignal
 
@@ -70,6 +70,16 @@ class Corpus(ABC):
 
     async def list_editions(self, query: EditionQuery) -> tuple[EditionRef, ...]:
         raise CapabilityNotSupported("editions")
+
+    async def get_edition_cover(self, edition_id: str) -> EditionCover:
+        """The front page of one edition.
+
+        Separate from EDITIONS: a CMS can hold dated bundles of articles
+        without modelling a front page at all, and a web-native archive has no
+        front page to model. `DocumentNotFound` means this edition has no
+        cover; `CapabilityNotSupported` means this backend has no covers.
+        """
+        raise CapabilityNotSupported("edition_cover")
 
     # --- assets -----------------------------------------------------------
     def stream_asset(self, asset_id: str) -> AsyncIterator[bytes]:

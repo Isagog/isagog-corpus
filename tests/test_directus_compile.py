@@ -12,6 +12,7 @@ from corpus_directus.compile import (
     article_ref_projection,
     chunk_ids,
     compile_article_query,
+    compile_cover_query,
     compile_edition_query,
     edition_projection,
 )
@@ -105,13 +106,17 @@ class TestArticleQueryCompilation:
         assert _params(ArticleQuery(page_size=25))["limit"] == "25"
 
     def test_edition_axis_without_a_declared_field_is_refused(self):
+        schema = DirectusSchema(article_edition_field=None)
         with pytest.raises(CapabilityNotSupported):
-            _params(ArticleQuery(edition_id="e1"))
+            compile_article_query(ArticleQuery(edition_id="e1"), schema)
 
     def test_edition_axis_compiles_when_the_schema_declares_the_field(self):
         schema = DirectusSchema(article_edition_field="edition")
         params = compile_article_query(ArticleQuery(edition_id="e1"), schema)
         assert params["filter[edition][_eq]"] == "e1"
+
+    def test_the_manifesto_schema_compiles_the_edition_axis(self):
+        assert _params(ArticleQuery(edition_id="e1"))["filter[articleEdition][_eq]"] == "e1"
 
 
 @pytest.mark.unit
@@ -192,3 +197,48 @@ class TestEditionQueryCompilation:
     def test_pdf_filter_is_absent_by_default(self):
         params = compile_edition_query(EditionQuery(), MANIFESTO_SCHEMA)
         assert "filter[editionPdf][_null]" not in params
+
+
+@pytest.mark.unit
+class TestCoverQueryCompilation:
+    def test_narrows_to_one_published_cover_row_of_one_edition(self):
+        params = compile_cover_query("ed-1", MANIFESTO_SCHEMA)
+        assert params["filter[articleEdition][_eq]"] == "ed-1"
+        assert params["filter[articlePositionCover][_eq]"] == "1"
+        assert params["filter[status][_eq]"] == "published"
+        assert params["limit"] == "1"
+
+    def test_projects_the_file_record_behind_the_image(self):
+        """Without the deep expansion the AssetRef arrives without a mime type,
+        and a caller deriving a file extension has to fetch the bytes first."""
+        fields = compile_cover_query("ed-1", MANIFESTO_SCHEMA)["fields"].split(",")
+        assert "referenceHeadline" in fields
+        assert "articleKicker" in fields
+        assert "articleFeaturedImage.image.id" in fields
+        assert "articleFeaturedImage.image.type" in fields
+        assert "articleFeaturedImage.image.filename_download" in fields
+        assert "articleFeaturedImage.image.filesize" in fields
+
+    def test_does_not_project_the_article_headline(self):
+        fields = compile_cover_query("ed-1", MANIFESTO_SCHEMA)["fields"].split(",")
+        assert "headline" not in fields
+
+    def test_is_refused_without_the_edition_axis(self):
+        with pytest.raises(CapabilityNotSupported):
+            compile_cover_query("ed-1", DirectusSchema(article_edition_field=None))
+
+    def test_a_renamed_instance_compiles_its_own_vocabulary(self):
+        schema = DirectusSchema(
+            article_edition_field="issue",
+            cover_fields={
+                "article_id": "id",
+                "headline": "frontPageTitle",
+                "kicker": "standfirst",
+                "image": "leadImage.file",
+            },
+            cover_filter={"isFrontPage": "true"},
+        )
+        params = compile_cover_query("ed-1", schema)
+        assert params["filter[issue][_eq]"] == "ed-1"
+        assert params["filter[isFrontPage][_eq]"] == "true"
+        assert "leadImage.file.type" in params["fields"].split(",")

@@ -14,7 +14,8 @@ schema constant.
 
 ```
 corpus/                 the port
-  models.py             Article, ArticleRef, Edition, EditionRef, AssetRef, ArticlePage
+  models.py             Article, ArticleRef, Edition, EditionRef, EditionCover,
+                        AssetRef, ArticlePage
   query.py              ArticleQuery, EditionQuery, ArticleOrder
   errors.py             the CorpusError tree (retryable / retry_after as data)
   capabilities.py       Capability, CorpusCapabilities, CorpusRequirements
@@ -31,7 +32,7 @@ corpus/                 the port
     contract.py         CorpusContractSuite — the executable adapter spec
 
 corpus_directus/        the specialization
-  schema.py             DirectusSchema + MANIFESTO_SCHEMA
+  schema.py             DirectusSchema + MANIFESTO_SCHEMA (incl. cover vocabulary)
   rows.py               row dict → models (pure)
   compile.py            queries → filter[…]/fields/sort params (pure)
   errors.py             native failure → taxonomy
@@ -53,6 +54,7 @@ SERVICE_REQUIREMENTS = CorpusRequirements(
             Capability.ARTICLES,
             Capability.EDITIONS,
             Capability.EDITION_PDF,
+            Capability.EDITION_COVER,
             Capability.ASSETS,
             Capability.CHANGE_SIGNALS,
         }
@@ -72,6 +74,31 @@ async for ref in corpus.iter_articles(ArticleQuery(page_size=100)):
     ...
 pdf = await corpus.fetch_asset(edition.pdf.id, max_bytes=80_000_000)
 ```
+
+### Front pages
+
+An archive of front pages wants the display headline a paper *prints* on its
+cover, which is routinely not the cover story's own headline — on
+`pulse.ilmanifesto.it` the two differ on most editions. `EditionCover` is that
+object, and it is capability-gated because a web-native archive has no front
+page to model:
+
+```python
+cover = await corpus.get_edition_cover(edition.id)
+cover.headline  # the display headline, HTML-stripped
+cover.kicker  # "" when absent
+cover.image  # AssetRef with mime and size already filled in
+cover.article_id  # the cover story, when the CMS links one
+```
+
+`DocumentNotFound` means *this edition* has no cover; `CapabilityNotSupported`
+means *this backend* has none. The image arrives as a complete `AssetRef` in
+the same response — a caller deriving a file extension never has to fetch the
+bytes to learn the type.
+
+It is reached only through `get_edition_cover`, deliberately not as a field on
+`Edition`: no backend can populate one without either a second request or a
+fatter projection charged to every consumer that does not want it.
 
 `fetch_asset` has no default `max_bytes` on purpose: the unguarded whole-PDF
 buffer is a defect no caller can now reproduce. Pagination is keyset-based and
@@ -123,7 +150,8 @@ test over the fake exercises the same semantics as production.
 1. Implement the mandatory surface: `capabilities`, `get_article`,
    `get_article_ref`, `search_articles`, `ping`.
 2. Declare capabilities honestly. Override `get_edition`, `list_editions`,
-   `stream_asset` and `parse_change` only for what you declare.
+   `get_edition_cover`, `stream_asset` and `parse_change` only for what you
+   declare.
 3. Map every native failure into the `CorpusError` tree.
 4. Subclass `CorpusContractSuite`, provide `corpus` and `seed` fixtures, and
    make it green. That suite is the definition of done.
@@ -135,7 +163,7 @@ The gap between a new backend's capability set and each consumer's
 
 ```bash
 uv sync --group dev
-uv run pytest --cov                 # 385 tests, contract suite runs twice
+uv run pytest --cov                 # 440 tests, contract suite runs twice
 uv run ruff check . && uv run pyright
 ./scripts/check_boundaries.sh       # temporalio / httpx / vendor-vocabulary bans
 ```

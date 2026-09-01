@@ -21,6 +21,7 @@ class Capability(StrEnum):
     SECTIONS = "sections"
     EDITIONS = "editions"  # get_edition / list_editions
     EDITION_PDF = "edition_pdf"
+    EDITION_COVER = "edition_cover"  # get_edition_cover — the front page as an object
     ASSETS = "assets"  # fetch binary
     ASSET_STREAMING = "asset_streaming"
     DATE_FILTER = "date_filter"

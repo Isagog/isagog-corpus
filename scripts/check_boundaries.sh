@@ -23,6 +23,7 @@ if grep -rn --include='*.py' '^\s*\(import\|from\)\s\+httpx' "$root/corpus" 2>/d
 fi
 
 vendor='items/articles\|items/editions\|filter\[\|datePublished\|articleBody\|articleKicker\|articleSection\|editionDate\|editionPdf'
+vendor="$vendor\|referenceHeadline\|articleFeaturedImage\|articlePositionCover\|articleEdition\|filename_download"
 targets=("$root/corpus")
 for extra in "$@"; do targets+=("$extra"); done
 if grep -rn --include='*.py' "$vendor" "${targets[@]}" 2>/dev/null; then

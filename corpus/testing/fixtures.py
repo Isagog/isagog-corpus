@@ -11,7 +11,7 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict
 
-from corpus.models import PUBLISHED, Article, AssetRef
+from corpus.models import PUBLISHED, Article, AssetRef, EditionCover
 
 ARTICLE_1_ID = "550e8400-e29b-41d4-a716-446655440001"
 ARTICLE_2_ID = "550e8400-e29b-41d4-a716-446655440002"
@@ -25,6 +25,9 @@ EDITION_3_ID = "660e8400-e29b-41d4-a716-4466554400a3"
 
 PDF_ASSET_ID = "770e8400-e29b-41d4-a716-4466554400f1"
 PDF_ASSET_ID_3 = "770e8400-e29b-41d4-a716-4466554400f3"
+COVER_ASSET_ID = "770e8400-e29b-41d4-a716-4466554400c1"
+
+_COVER_JPEG = b"\xff\xd8\xff\xe0 prima pagina 2024-01-15 " + b"y" * 256
 
 _BODY = (
     "Il corpo dell'articolo, abbastanza lungo da superare le soglie di "
@@ -52,6 +55,9 @@ class SeedEdition(BaseModel):
     title: str | None = None
     status: str = PUBLISHED
     pdf: AssetRef | None = None
+    #: None means this edition has no front page — `get_edition_cover` must
+    #: raise DocumentNotFound for it, not return a blank cover.
+    cover: EditionCover | None = None
 
 
 class CorpusSeed(BaseModel):
@@ -133,18 +139,41 @@ DEFAULT_SEED = CorpusSeed(
             slug="edizione-2024-01-15",
             title="Edizione del 15 gennaio",
             pdf=AssetRef(id=PDF_ASSET_ID, filename="2024-01-15.pdf", mime="application/pdf"),
+            # The display headline is deliberately NOT the cover story's own
+            # headline ("Primo articolo"). An adapter that lazily maps the
+            # article headline onto the cover fails the contract suite here.
+            cover=EditionCover(
+                article_id=ARTICLE_1_ID,
+                headline="Prima pagina del 15 gennaio",
+                kicker="Cronaca",
+                image=AssetRef(
+                    id=COVER_ASSET_ID,
+                    filename="2024-01-15-cover.jpg",
+                    mime="image/jpeg",
+                    size=len(_COVER_JPEG),
+                ),
+            ),
         ),
-        # No PDF: `EditionQuery(require_pdf=True)` must exclude it.
+        # No PDF and no cover: `EditionQuery(require_pdf=True)` must exclude
+        # it, and `get_edition_cover` must report it as not found.
         SeedEdition(id=EDITION_2_ID, date="2024-01-16", slug="edizione-2024-01-16"),
+        # A cover whose image the CMS never got: the front page still exists,
+        # so `image is None` must be reachable without an error.
         SeedEdition(
             id=EDITION_3_ID,
             date="2024-01-17",
             slug="edizione-2024-01-17",
             pdf=AssetRef(id=PDF_ASSET_ID_3, filename="2024-01-17.pdf", mime="application/pdf"),
+            cover=EditionCover(
+                article_id=ARTICLE_4_ID,
+                headline="Prima pagina del 17 gennaio",
+                kicker="Cronaca",
+            ),
         ),
     ),
     assets={
         PDF_ASSET_ID: b"%PDF-1.4 edizione 2024-01-15 " + b"x" * 512,
         PDF_ASSET_ID_3: b"%PDF-1.4 edizione 2024-01-17 " + b"x" * 512,
+        COVER_ASSET_ID: _COVER_JPEG,
     },
 )

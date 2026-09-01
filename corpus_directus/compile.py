@@ -31,6 +31,8 @@ _ARTICLE_PROJECTION = (
 )
 _ARTICLE_REF_PROJECTION = ("id", "slug", "status", "publish_date", "section")
 _EDITION_PROJECTION = ("id", "date", "status", "slug", "title", "pdf")
+_COVER_PROJECTION = ("article_id", "headline", "kicker")
+_FILE_PROJECTION = ("id", "mime", "filename", "size")
 
 
 def article_projection(schema: DirectusSchema) -> str:
@@ -48,6 +50,36 @@ def edition_projection(schema: DirectusSchema, *, with_articles: bool) -> str:
     else:
         fields.append(f"articles.{schema.article_field('id')}")
     return ",".join(fields)
+
+
+def cover_projection(schema: DirectusSchema) -> str:
+    """Scalar cover fields plus the file record behind the image, so the
+    `AssetRef` arrives complete in the same response."""
+    fields = [schema.cover_field(name) for name in _COVER_PROJECTION]
+    image = schema.cover_field("image")
+    fields += [f"{image}.{schema.file_field(name)}" for name in _FILE_PROJECTION]
+    return ",".join(fields)
+
+
+def compile_cover_query(edition_id: str, schema: DirectusSchema) -> dict[str, str]:
+    """The one article of `edition_id` that the CMS marks as the front page.
+
+    Published-only, like the nested articles of an edition: a cover still in
+    draft is not the front page of a published edition.
+    """
+    if schema.article_edition_field is None:
+        raise CapabilityNotSupported(
+            "reading a cover requires DirectusSchema.article_edition_field"
+        )
+    params: dict[str, str] = {
+        "fields": cover_projection(schema),
+        "limit": "1",
+        f"filter[{schema.article_edition_field}][_eq]": edition_id,
+        f"filter[{schema.article_field('status')}][_eq]": schema.published_status,
+    }
+    for field, value in schema.cover_filter.items():
+        params[f"filter[{field}][_eq]"] = value
+    return params
 
 
 def chunk_ids(values: Sequence[str], size: int) -> tuple[tuple[str, ...], ...]:

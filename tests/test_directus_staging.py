@@ -14,7 +14,7 @@ import os
 from datetime import date, timedelta
 
 import pytest
-from corpus.errors import DocumentNotFound
+from corpus.errors import DocumentNotFound, InvalidDocument
 from corpus.models import Article
 from corpus.query import ArticleQuery, EditionQuery
 from corpus_directus.client import DirectusCorpus
@@ -79,6 +79,60 @@ async def test_the_edition_schema_still_parses(corpus):
     edition = await corpus.get_edition(editions[0].id)
     assert edition.pdf is not None
     assert len(edition.date) == 10
+
+
+async def test_the_cover_schema_still_parses(corpus):
+    """The one test that notices a `referenceHeadline` rename before a
+    consumer's caption column fills up with nulls."""
+    today = date.today()
+    editions = await corpus.list_editions(
+        EditionQuery(date_from=today - timedelta(days=14), date_to=today), page_size=20
+    )
+    if not editions:
+        pytest.skip("no recent editions on the staging instance")
+
+    for ref in sorted(editions, key=lambda e: e.date, reverse=True):
+        try:
+            cover = await corpus.get_edition_cover(ref.id)
+        except DocumentNotFound:
+            continue  # an edition the CMS never gave a front page
+        assert cover.headline, "cover headline came back empty"
+        if cover.image is not None:
+            assert cover.image.mime, "the file record did not expand — projection drift"
+            assert cover.image.size, "the file record did not expand — projection drift"
+        return
+    pytest.skip("no recent edition carries a cover")
+
+
+#: Each comparison costs a cover query plus a full article fetch, so the walk
+#: stops as soon as it has seen enough to be meaningful.
+_HEADLINE_SAMPLE = 5
+
+
+async def test_the_cover_headline_is_not_the_article_headline(corpus):
+    """The distinction the EditionCover model exists for. If this starts
+    failing everywhere, the instance changed what `referenceHeadline` means."""
+    today = date.today()
+    editions = await corpus.list_editions(
+        EditionQuery(date_from=today - timedelta(days=14), date_to=today), page_size=20
+    )
+    compared = 0
+    differed = 0
+    for ref in sorted(editions, key=lambda e: e.date, reverse=True):
+        if compared >= _HEADLINE_SAMPLE:
+            break
+        try:
+            cover = await corpus.get_edition_cover(ref.id)
+        except (DocumentNotFound, InvalidDocument):
+            continue
+        if cover.article_id is None:
+            continue
+        story = await corpus.get_article(cover.article_id)
+        compared += 1
+        differed += cover.headline != story.headline
+    if compared < 3:
+        pytest.skip("not enough recent covers linked to an article")
+    assert differed, "no cover differed from its story headline — check the schema mapping"
 
 
 async def test_a_missing_document_is_not_found(corpus):

@@ -6,6 +6,8 @@ from corpus.models import Article, ArticleRef, AssetRef, Edition, EditionRef
 from corpus_directus.rows import (
     article_from_row,
     article_ref_from_row,
+    asset_ref_from_file,
+    cover_from_row,
     edition_from_row,
     edition_ref_from_row,
 )
@@ -178,3 +180,116 @@ class TestEditionRefFromRow:
     def test_malformed_pdf_reference_is_no_pdf(self):
         ref = edition_ref_from_row({**EDITION_ROW, "editionPdf": "not-an-object"}, MANIFESTO_SCHEMA)
         assert ref.pdf is None
+
+
+#: The shape the live instance returned on 2026-09-01 for the cover of the
+#: 2026-09-01 edition, with the file record expanded through the relation.
+COVER_ROW = {
+    "id": "780b8c04-d991-48ee-a5e0-e9f0e8dab976",
+    "referenceHeadline": "Ristretto",
+    "articleKicker": "Washington vuole segnalare di essere in grado di proteggere il traffico",
+    "articleFeaturedImage": {
+        "image": {
+            "id": "81e3fd96-9cc9-4542-93fc-35f7451d278f",
+            "type": "image/jpeg",
+            "filename_download": "sostituisce-01desk1f01-hormuz-.jpg",
+            "filesize": "97698",
+        }
+    },
+}
+
+
+def _cover_row(**overrides):
+    return {**COVER_ROW, **overrides}
+
+
+@pytest.mark.unit
+class TestCoverFromRow:
+    def test_parses_the_live_shape(self):
+        cover = cover_from_row(COVER_ROW, MANIFESTO_SCHEMA)
+        assert cover.article_id == "780b8c04-d991-48ee-a5e0-e9f0e8dab976"
+        assert cover.headline == "Ristretto"
+        assert cover.kicker.startswith("Washington vuole")
+        assert cover.image is not None
+        assert cover.image.id == "81e3fd96-9cc9-4542-93fc-35f7451d278f"
+        assert cover.image.mime == "image/jpeg"
+        assert cover.image.filename == "sostituisce-01desk1f01-hormuz-.jpg"
+
+    def test_filesize_arrives_as_a_string_and_becomes_an_int(self):
+        """Directus reports `filesize` as a string. A consumer comparing it to
+        a byte budget must not have to know that."""
+        cover = cover_from_row(COVER_ROW, MANIFESTO_SCHEMA)
+        assert cover.image is not None
+        assert cover.image.size == 97698
+
+    def test_html_is_stripped_from_both_texts(self):
+        cover = cover_from_row(
+            _cover_row(referenceHeadline="<h2>Ristretto</h2>", articleKicker="<p>Il punto</p>"),
+            MANIFESTO_SCHEMA,
+        )
+        assert cover.headline == "Ristretto"
+        assert cover.kicker == "Il punto"
+
+    def test_absent_kicker_folds_to_empty_string(self):
+        cover = cover_from_row(_cover_row(articleKicker=None), MANIFESTO_SCHEMA)
+        assert cover.kicker == ""
+
+    def test_a_null_display_headline_is_a_bad_value_not_an_empty_cover(self):
+        """`referenceHeadline` is null across the pre-2015 editions of this
+        archive. Folding it to "" would write blank captions into a consumer's
+        database instead of naming the gap."""
+        with pytest.raises(InvalidDocument) as excinfo:
+            cover_from_row(_cover_row(referenceHeadline=None), MANIFESTO_SCHEMA)
+        assert excinfo.value.kind == "bad_value"
+
+    def test_a_missing_image_relation_leaves_the_cover_intact(self):
+        cover = cover_from_row(_cover_row(articleFeaturedImage=None), MANIFESTO_SCHEMA)
+        assert cover.image is None
+        assert cover.headline == "Ristretto"
+
+    def test_an_image_relation_with_no_file_behind_it_is_absent(self):
+        cover = cover_from_row(_cover_row(articleFeaturedImage={"image": None}), MANIFESTO_SCHEMA)
+        assert cover.image is None
+
+    def test_a_renamed_instance_parses_through_its_own_schema(self):
+        schema = DirectusSchema(
+            cover_fields={
+                "article_id": "id",
+                "headline": "frontPageTitle",
+                "kicker": "standfirst",
+                "image": "leadImage.file",
+            }
+        )
+        cover = cover_from_row(
+            {
+                "id": "a1",
+                "frontPageTitle": "Prima pagina",
+                "standfirst": "Il punto",
+                "leadImage": {"file": {"id": "f1", "type": "image/png"}},
+            },
+            schema,
+        )
+        assert cover.headline == "Prima pagina"
+        assert cover.image is not None and cover.image.mime == "image/png"
+
+
+@pytest.mark.unit
+class TestAssetRefFromFile:
+    def test_an_unexpanded_relation_still_yields_a_usable_id(self):
+        """A bare file id is a projection bug, not a corrupt document — losing
+        the mime type is not worth failing a cover over."""
+        ref = asset_ref_from_file("81e3fd96-9cc9-4542-93fc-35f7451d278f", MANIFESTO_SCHEMA)
+        assert ref == AssetRef(id="81e3fd96-9cc9-4542-93fc-35f7451d278f")
+
+    def test_absent_is_absent(self):
+        assert asset_ref_from_file(None, MANIFESTO_SCHEMA) is None
+        assert asset_ref_from_file("", MANIFESTO_SCHEMA) is None
+        assert asset_ref_from_file({}, MANIFESTO_SCHEMA) is None
+
+    def test_an_unparseable_size_is_dropped_not_raised(self):
+        ref = asset_ref_from_file({"id": "f1", "filesize": "not-a-number"}, MANIFESTO_SCHEMA)
+        assert ref is not None and ref.size is None
+
+    def test_a_boolean_size_is_not_coerced_to_one(self):
+        ref = asset_ref_from_file({"id": "f1", "filesize": True}, MANIFESTO_SCHEMA)
+        assert ref is not None and ref.size is None

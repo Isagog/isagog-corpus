@@ -26,7 +26,15 @@ import pytest
 from corpus.base import Corpus
 from corpus.capabilities import Capability, CorpusRequirements
 from corpus.errors import CapabilityNotSupported, CorpusError, DocumentNotFound, InvalidDocument
-from corpus.models import PUBLISHED, Article, ArticlePage, ArticleRef, Edition, EditionRef
+from corpus.models import (
+    PUBLISHED,
+    Article,
+    ArticlePage,
+    ArticleRef,
+    Edition,
+    EditionCover,
+    EditionRef,
+)
 from corpus.query import ArticleOrder, ArticleQuery, EditionQuery
 from corpus.signals import ChangeSignal
 from corpus.testing.fixtures import CorpusSeed
@@ -44,6 +52,7 @@ _METHOD_CAPABILITIES = (
     Capability.ARTICLES,
     Capability.ARTICLE_LISTING,
     Capability.EDITIONS,
+    Capability.EDITION_COVER,
     Capability.ASSETS,
     Capability.CHANGE_SIGNALS,
 )
@@ -55,6 +64,14 @@ def _published(seed: CorpusSeed):
 
 def _edition_with_pdf(seed: CorpusSeed):
     return next(e for e in seed.editions if e.pdf is not None)
+
+
+def _edition_with_cover(seed: CorpusSeed):
+    return next(e for e in seed.editions if e.cover is not None)
+
+
+def _edition_without_cover(seed: CorpusSeed):
+    return next((e for e in seed.editions if e.cover is None), None)
 
 
 def _chain(error: BaseException) -> list[BaseException]:
@@ -219,6 +236,84 @@ class CorpusContractSuite:
         assert editions
         assert all(e.pdf is not None for e in editions)
 
+    # --- edition covers ---------------------------------------------------
+    async def test_get_edition_cover_returns_the_front_page(self, corpus: Corpus, seed):
+        self._skip_unless(corpus, Capability.EDITION_COVER)
+        for seeded in (e for e in seed.editions if e.cover is not None):
+            cover = await corpus.get_edition_cover(seeded.id)
+            expected = seeded.cover
+            assert isinstance(cover, EditionCover)
+            assert cover.headline == expected.headline  # type: ignore[union-attr]
+            assert cover.kicker == expected.kicker  # type: ignore[union-attr]
+            assert cover.article_id == expected.article_id  # type: ignore[union-attr]
+            assert "<" not in cover.headline and "<" not in cover.kicker
+
+    async def test_cover_headline_is_the_display_headline(self, corpus: Corpus, seed):
+        """Not the cover story's own headline.
+
+        The two differ on most real editions, so an adapter that maps the
+        article headline onto the cover looks correct until it reaches
+        production. The seed keeps them different on purpose."""
+        self._skip_unless(corpus, Capability.EDITION_COVER)
+        seeded = _edition_with_cover(seed)
+        article_id = seeded.cover.article_id  # type: ignore[union-attr]
+        if article_id is None:
+            pytest.skip("seeded cover is not linked to an article")
+        story = next(s for s in seed.articles if s.article.id == article_id).article
+        assert seeded.cover.headline != story.headline, "seed no longer proves the distinction"  # type: ignore[union-attr]
+
+        cover = await corpus.get_edition_cover(seeded.id)
+        assert cover.headline == seeded.cover.headline  # type: ignore[union-attr]
+
+    async def test_cover_image_is_a_populated_asset_ref(self, corpus: Corpus, seed):
+        self._skip_unless(corpus, Capability.EDITION_COVER)
+        withimage = [e for e in seed.editions if e.cover is not None and e.cover.image is not None]
+        if not withimage:
+            pytest.skip("seed carries no cover image")
+        seeded = withimage[0]
+        cover = await corpus.get_edition_cover(seeded.id)
+        expected = seeded.cover.image  # type: ignore[union-attr]
+        assert cover.image is not None
+        assert cover.image.id == expected.id  # type: ignore[union-attr]
+        # mime and size come free from the backend's own file record; a caller
+        # deriving a file extension must not have to fetch the bytes first.
+        assert cover.image.mime == expected.mime  # type: ignore[union-attr]
+        assert cover.image.size == expected.size  # type: ignore[union-attr]
+
+    async def test_a_cover_without_an_image_is_still_a_cover(self, corpus: Corpus, seed):
+        self._skip_unless(corpus, Capability.EDITION_COVER)
+        without = [e for e in seed.editions if e.cover is not None and e.cover.image is None]
+        if not without:
+            pytest.skip("seed carries no image-less cover")
+        cover = await corpus.get_edition_cover(without[0].id)
+        assert cover.image is None
+        assert cover.headline
+
+    async def test_the_cover_image_is_fetchable(self, corpus: Corpus, seed):
+        self._skip_unless(corpus, Capability.EDITION_COVER)
+        self._skip_unless(corpus, Capability.ASSETS)
+        seeded = _edition_with_cover(seed)
+        cover = await corpus.get_edition_cover(seeded.id)
+        if cover.image is None:
+            pytest.skip("seeded cover has no image")
+        payload = await corpus.fetch_asset(cover.image.id, max_bytes=50_000_000)
+        assert payload == seed.assets[cover.image.id]
+
+    async def test_an_edition_without_a_cover_raises_not_found(self, corpus: Corpus, seed):
+        """Distinct from CapabilityNotSupported: this backend does covers, this
+        edition has none."""
+        self._skip_unless(corpus, Capability.EDITION_COVER)
+        seeded = _edition_without_cover(seed)
+        if seeded is None:
+            pytest.skip("every seeded edition has a cover")
+        with pytest.raises(DocumentNotFound):
+            await corpus.get_edition_cover(seeded.id)
+
+    async def test_get_edition_cover_unknown_edition_raises_not_found(self, corpus: Corpus):
+        self._skip_unless(corpus, Capability.EDITION_COVER)
+        with pytest.raises(DocumentNotFound):
+            await corpus.get_edition_cover("00000000-0000-4000-8000-00000000fffe")
+
     # --- assets -----------------------------------------------------------
     async def test_fetch_asset_returns_the_bytes(self, corpus: Corpus, seed):
         self._skip_unless(corpus, Capability.ASSETS)
@@ -278,6 +373,8 @@ class CorpusContractSuite:
             lambda: corpus.get_article_ref("../../etc/passwd"),
             lambda: corpus.search_articles(ArticleQuery(), "%%%"),
             lambda: corpus.get_edition("not-a-uuid"),
+            lambda: corpus.get_edition_cover("not-a-uuid"),
+            lambda: corpus.get_edition_cover(""),
             lambda: corpus.fetch_asset("not-a-uuid", max_bytes=10),
         ]
         for probe in probes:
@@ -332,6 +429,8 @@ class CorpusContractSuite:
                 await corpus.search_articles(ArticleQuery(page_size=2))
             case Capability.EDITIONS:
                 await corpus.get_edition(seed.editions[0].id)
+            case Capability.EDITION_COVER:
+                await corpus.get_edition_cover(_edition_with_cover(seed).id)
             case Capability.ASSETS:
                 asset_id = _edition_with_pdf(seed).pdf.id  # type: ignore[union-attr]
                 await corpus.fetch_asset(asset_id, max_bytes=50_000_000)

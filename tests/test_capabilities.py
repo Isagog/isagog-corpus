@@ -20,6 +20,13 @@ class TestCorpusCapabilities:
         with pytest.raises(ValidationError):
             FULL.max_page_size = 500
 
+    def test_edition_cover_is_declarable_and_separate_from_editions(self):
+        """A CMS can hold editions without modelling a front page, so the two
+        capabilities are independent."""
+        caps = CorpusCapabilities(supported=frozenset({Capability.EDITIONS}))
+        assert caps.supports(Capability.EDITIONS) is True
+        assert caps.supports(Capability.EDITION_COVER) is False
+
     def test_supports_helper(self):
         caps = CorpusCapabilities(supported=frozenset({Capability.ARTICLES}))
         assert caps.supports(Capability.ARTICLES) is True
@@ -66,6 +73,7 @@ def test_capability_values_are_stable_strings():
     assert Capability.SECTIONS.value == "sections"
     assert Capability.EDITIONS.value == "editions"
     assert Capability.EDITION_PDF.value == "edition_pdf"
+    assert Capability.EDITION_COVER.value == "edition_cover"
     assert Capability.ASSETS.value == "assets"
     assert Capability.ASSET_STREAMING.value == "asset_streaming"
     assert Capability.DATE_FILTER.value == "date_filter"

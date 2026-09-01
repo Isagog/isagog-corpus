@@ -32,7 +32,41 @@ class TestDirectusSchema:
         assert other.article_fields["headline"] == "headline"
         assert MANIFESTO_SCHEMA.article_fields["body"] == "articleBody"
 
-    def test_article_edition_field_is_unset_by_default(self):
-        """No production call site filters articles by edition; the reverse
-        field name must be declared before that axis can compile."""
-        assert MANIFESTO_SCHEMA.article_edition_field is None
+    def test_article_edition_field_is_declared(self):
+        """Verified against pulse.ilmanifesto.it on 2026-09-01:
+        `filter[articleEdition][_eq]=<uuid>` returns that edition's articles.
+        Both `ArticleQuery(edition_id=...)` and covers depend on it."""
+        assert MANIFESTO_SCHEMA.article_edition_field == "articleEdition"
+
+    def test_an_instance_without_the_edition_axis_declares_no_covers(self):
+        """A cover is one edition's articles filtered down to one row, so an
+        instance that cannot express that axis has no covers to offer."""
+        assert MANIFESTO_SCHEMA.supports_covers is True
+        assert DirectusSchema(article_edition_field=None).supports_covers is False
+
+    def test_cover_vocabulary_is_schema_data(self):
+        assert MANIFESTO_SCHEMA.cover_field("headline") == "referenceHeadline"
+        assert MANIFESTO_SCHEMA.cover_field("image") == "articleFeaturedImage.image"
+        assert MANIFESTO_SCHEMA.cover_filter == {"articlePositionCover": "1"}
+        assert MANIFESTO_SCHEMA.file_field("mime") == "type"
+        assert MANIFESTO_SCHEMA.file_field("size") == "filesize"
+
+    def test_the_display_headline_is_not_the_article_headline(self):
+        """The two are different Directus fields, and conflating them is the
+        one mistake a cover adapter is most likely to make."""
+        assert MANIFESTO_SCHEMA.cover_field("headline") != MANIFESTO_SCHEMA.article_field(
+            "headline"
+        )
+
+    def test_a_renamed_instance_is_a_constant_not_a_subclass(self):
+        other = DirectusSchema(
+            cover_fields={
+                "article_id": "id",
+                "headline": "frontPageTitle",
+                "kicker": "standfirst",
+                "image": "leadImage.file",
+            },
+            cover_filter={"isFrontPage": "true"},
+        )
+        assert other.cover_field("headline") == "frontPageTitle"
+        assert MANIFESTO_SCHEMA.cover_field("headline") == "referenceHeadline"

@@ -15,6 +15,7 @@ from corpus.query import ArticleOrder, ArticleQuery, EditionQuery
 from corpus.signals import ChangeKind, ChangeSignal
 from corpus.testing.fake import FakeCorpus
 from corpus.testing.fixtures import (
+    ARTICLE_1_ID,
     DEFAULT_SEED,
     EDITION_1_ID,
     EDITION_2_ID,
@@ -231,3 +232,25 @@ class TestChangeSignals:
         signal = corpus.parse_change("a1", None)
         assert signal.change is ChangeKind.UNKNOWN
         assert signal.article_id == "a1"
+
+
+@pytest.mark.unit
+class TestFakeEditionCover:
+    async def test_returns_the_seeded_front_page(self, corpus):
+        cover = await corpus.get_edition_cover(EDITION_1_ID)
+        assert cover.headline == "Prima pagina del 15 gennaio"
+        assert cover.article_id == ARTICLE_1_ID
+
+    async def test_an_edition_without_a_cover_is_not_found(self, corpus):
+        with pytest.raises(DocumentNotFound):
+            await corpus.get_edition_cover(EDITION_2_ID)
+
+    async def test_an_undeclared_capability_is_refused(self):
+        corpus = FakeCorpus.from_seed(
+            DEFAULT_SEED,
+            capabilities=CorpusCapabilities(
+                supported=frozenset(Capability) - {Capability.EDITION_COVER}
+            ),
+        )
+        with pytest.raises(CapabilityNotSupported):
+            await corpus.get_edition_cover(EDITION_1_ID)
