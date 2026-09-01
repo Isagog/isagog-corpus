@@ -18,6 +18,7 @@ dependencies = [
 # Everything else in `corpus.testing` — FakeCorpus included — is production
 # importable without it.
 testing = ["pytest>=8.4.0", "pytest-asyncio>=1.0.0"]
+examples = ["python-dotenv>=1.0.0"]
 
 [dependency-groups]
 dev = [
@@ -53,7 +54,7 @@ source = ["corpus", "corpus_directus"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-src = ["corpus", "corpus_directus", "tests"]
+src = ["corpus", "corpus_directus", "tests", "examples"]
 # Design docs carry illustrative Python in fenced blocks; they are prose, not source.
 extend-exclude = ["docs"]
 
