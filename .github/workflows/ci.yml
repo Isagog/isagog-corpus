@@ -13,7 +13,8 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv sync --group dev
+      # tests/test_duplicati.py loads examples/duplicati.py, which needs python-dotenv.
+      - run: uv sync --group dev --extra examples
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
