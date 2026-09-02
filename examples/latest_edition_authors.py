@@ -1,8 +1,13 @@
 """List "author — title" for every article in the newest edition.
 
-Titles print as clickable OSC 8 terminal hyperlinks (supported by iTerm2,
-kitty, VS Code's terminal, Windows Terminal; other terminals just show the
-plain text).
+Titles print as OSC 8 terminal hyperlinks, underlined so they read as links
+even in terminals that add no styling of their own (Ghostty). Terminals that
+do not understand OSC 8 just show the plain text.
+
+How to follow a link depends on the terminal: iTerm2 and kitty open it on
+cmd-click, Ghostty needs cmd held *while moving the mouse over* the title --
+it only resolves a link on modifier-hover, and pressing cmd without moving
+does nothing.
 
 Usage:
     cp examples/.env.example examples/.env   # then fill in a real API key
@@ -31,8 +36,15 @@ REQUIREMENTS = CorpusRequirements(required=frozenset({Capability.EDITIONS, Capab
 LOOKBACK_DAYS = 14
 
 
+# OSC 8 carries the target; the SGR underline is what makes the title *look*
+# clickable. Ghostty renders OSC 8 text identically to plain text otherwise,
+# so without this there is nothing to tell a reader a link is there at all.
+UNDERLINE_ON = "\033[4m"
+UNDERLINE_OFF = "\033[24m"
+
+
 def _hyperlink(url: str, text: str) -> str:
-    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+    return f"\033]8;;{url}\033\\{UNDERLINE_ON}{text}{UNDERLINE_OFF}\033]8;;\033\\"
 
 
 async def main() -> None:
