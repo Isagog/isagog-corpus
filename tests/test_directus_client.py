@@ -457,6 +457,25 @@ class TestEditionCover:
         assert cover.image.mime == "image/jpeg"
         assert cover.image.size is not None
 
+    @pytest.mark.parametrize(
+        ("row_images", "expected_id"),
+        [
+            ({"referenceImage": None, "articleFeaturedImage": {"image": {"id": "story"}}}, "story"),
+            ({"referenceImage": None, "articleFeaturedImage": None}, None),
+        ],
+        ids=["only-story-photo", "neither"],
+    )
+    async def test_a_missing_cover_picture_falls_back_then_gives_none(
+        self, corpus, row_images, expected_id
+    ):
+        row = {"id": "a1", "referenceHeadline": "Titolo", "articleKicker": None, **row_images}
+        with respx.mock(base_url=BASE_URL) as mock:
+            mock.get("/items/articles").mock(return_value=httpx.Response(200, json={"data": [row]}))
+            cover = await corpus.get_edition_cover(EDITION_1_ID)
+
+        assert cover.headline == "Titolo"
+        assert (cover.image.id if cover.image else None) == expected_id
+
     async def test_asks_the_articles_collection_filtered_to_one_edition(self, corpus, stub):
         with respx.mock(base_url=BASE_URL) as mock:
             mock.route().mock(side_effect=stub)

@@ -96,8 +96,20 @@ def cover_from_row(row: Mapping[str, Any], schema: DirectusSchema) -> EditionCov
         article_id=_optional_text(_pluck(row, field("article_id"))),
         headline=require_text(_pluck(row, field("headline")), "cover headline"),
         kicker=strip_html(_pluck(row, field("kicker"))),
-        image=asset_ref_from_file(_pluck(row, field("image")), schema),
+        image=_first_asset(row, schema.cover_image_fields, schema),
     )
+
+
+def _first_asset(
+    row: Mapping[str, Any], paths: tuple[str, ...], schema: DirectusSchema
+) -> AssetRef | None:
+    """The first of `paths` that resolves to a file; a null cover picture falls
+    through to the story photo rather than hiding it."""
+    for path in paths:
+        ref = asset_ref_from_file(_pluck(row, path), schema)
+        if ref is not None:
+            return ref
+    return None
 
 
 def asset_ref_from_file(value: Any, schema: DirectusSchema) -> AssetRef | None:

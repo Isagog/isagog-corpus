@@ -280,6 +280,23 @@ class CorpusContractSuite:
         assert cover.image.mime == expected.mime  # type: ignore[union-attr]
         assert cover.image.size == expected.size  # type: ignore[union-attr]
 
+    async def test_cover_image_is_the_cover_picture_not_the_story_photo(self, corpus: Corpus, seed):
+        """The cover story's own photo is a different file on most editions.
+        Taking it instead looks right until someone compares the front page."""
+        self._skip_unless(corpus, Capability.EDITION_COVER)
+        seeded = next(
+            (e for e in seed.editions if e.cover is not None and e.cover_story_image is not None),
+            None,
+        )
+        if seeded is None:
+            pytest.skip("seed carries no distinct cover-story photo")
+        assert seeded.cover.image is not None  # type: ignore[union-attr]
+        assert seeded.cover.image.id != seeded.cover_story_image.id  # type: ignore[union-attr]
+
+        cover = await corpus.get_edition_cover(seeded.id)
+        assert cover.image is not None
+        assert cover.image.id == seeded.cover.image.id  # type: ignore[union-attr]
+
     async def test_a_cover_without_an_image_is_still_a_cover(self, corpus: Corpus, seed):
         self._skip_unless(corpus, Capability.EDITION_COVER)
         without = [e for e in seed.editions if e.cover is not None and e.cover.image is None]

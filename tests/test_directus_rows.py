@@ -188,12 +188,21 @@ COVER_ROW = {
     "id": "780b8c04-d991-48ee-a5e0-e9f0e8dab976",
     "referenceHeadline": "Ristretto",
     "articleKicker": "Washington vuole segnalare di essere in grado di proteggere il traffico",
-    "articleFeaturedImage": {
+    "referenceImage": {
         "image": {
             "id": "81e3fd96-9cc9-4542-93fc-35f7451d278f",
             "type": "image/jpeg",
             "filename_download": "sostituisce-01desk1f01-hormuz-.jpg",
             "filesize": "97698",
+        }
+    },
+    #: The cover story's own photo — the wrong picture for the front page.
+    "articleFeaturedImage": {
+        "image": {
+            "id": "0f0f0f0f-0000-4000-8000-000000000001",
+            "type": "image/png",
+            "filename_download": "ansa-torino-palazzi.png",
+            "filesize": "123",
         }
     },
 }
@@ -242,13 +251,48 @@ class TestCoverFromRow:
             cover_from_row(_cover_row(referenceHeadline=None), MANIFESTO_SCHEMA)
         assert excinfo.value.kind == "bad_value"
 
-    def test_a_missing_image_relation_leaves_the_cover_intact(self):
-        cover = cover_from_row(_cover_row(articleFeaturedImage=None), MANIFESTO_SCHEMA)
+    def test_the_cover_picture_wins_over_the_story_photo(self):
+        """Both are set on most editions; the front page shows the first."""
+        cover = cover_from_row(COVER_ROW, MANIFESTO_SCHEMA)
+        assert cover.image is not None
+        assert cover.image.id == "81e3fd96-9cc9-4542-93fc-35f7451d278f"
+
+    def test_a_null_cover_picture_falls_back_to_the_story_photo(self):
+        cover = cover_from_row(_cover_row(referenceImage=None), MANIFESTO_SCHEMA)
+        assert cover.image is not None
+        assert cover.image.id == "0f0f0f0f-0000-4000-8000-000000000001"
+        assert cover.image.mime == "image/png"
+        assert cover.image.size == 123
+
+    def test_a_cover_picture_relation_with_no_file_falls_back_too(self):
+        cover = cover_from_row(_cover_row(referenceImage={"image": None}), MANIFESTO_SCHEMA)
+        assert cover.image is not None
+        assert cover.image.id == "0f0f0f0f-0000-4000-8000-000000000001"
+
+    def test_neither_image_is_still_a_cover(self):
+        cover = cover_from_row(
+            _cover_row(referenceImage=None, articleFeaturedImage=None), MANIFESTO_SCHEMA
+        )
         assert cover.image is None
         assert cover.headline == "Ristretto"
 
-    def test_an_image_relation_with_no_file_behind_it_is_absent(self):
-        cover = cover_from_row(_cover_row(articleFeaturedImage={"image": None}), MANIFESTO_SCHEMA)
+    def test_neither_image_with_empty_file_relations_is_still_a_cover(self):
+        cover = cover_from_row(
+            _cover_row(referenceImage={"image": None}, articleFeaturedImage={"image": None}),
+            MANIFESTO_SCHEMA,
+        )
+        assert cover.image is None
+
+    def test_a_schema_without_a_fallback_ignores_the_story_photo(self):
+        schema = DirectusSchema(
+            cover_fields={
+                "article_id": "id",
+                "headline": "referenceHeadline",
+                "kicker": "articleKicker",
+                "image": "referenceImage.image",
+            }
+        )
+        cover = cover_from_row(_cover_row(referenceImage=None), schema)
         assert cover.image is None
 
     def test_a_renamed_instance_parses_through_its_own_schema(self):

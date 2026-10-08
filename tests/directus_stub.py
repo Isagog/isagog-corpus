@@ -38,6 +38,7 @@ class InvalidQuery(Exception):
 def article_row(seed: CorpusSeed, seeded) -> dict[str, Any]:
     article = seeded.article
     cover = _cover_of(seed, article.id)
+    story_image = _story_image_of(seed, article.id)
     return {
         "id": article.id,
         "slug": article.slug,
@@ -53,9 +54,10 @@ def article_row(seed: CorpusSeed, seeded) -> dict[str, Any]:
         # carries it; every other article answers the cover filter with None.
         "articlePositionCover": 1 if cover else None,
         "referenceHeadline": f"<p>{cover.headline}</p>" if cover else None,
-        "articleFeaturedImage": (
-            {"image": file_row(cover.image)} if cover and cover.image else None
-        ),
+        # `referenceImage` is the cover picture; `articleFeaturedImage` is the
+        # story's own photo. Both are m2o to `images`, whose `image` is the file.
+        "referenceImage": ({"image": file_row(cover.image)} if cover and cover.image else None),
+        "articleFeaturedImage": ({"image": file_row(story_image)} if story_image else None),
     }
 
 
@@ -63,6 +65,17 @@ def _cover_of(seed: CorpusSeed, article_id: str):
     return next(
         (
             e.cover
+            for e in seed.editions
+            if e.cover is not None and e.cover.article_id == article_id
+        ),
+        None,
+    )
+
+
+def _story_image_of(seed: CorpusSeed, article_id: str):
+    return next(
+        (
+            e.cover_story_image
             for e in seed.editions
             if e.cover is not None and e.cover.article_id == article_id
         ),

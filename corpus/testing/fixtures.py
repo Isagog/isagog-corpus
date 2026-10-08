@@ -26,7 +26,9 @@ EDITION_3_ID = "660e8400-e29b-41d4-a716-4466554400a3"
 PDF_ASSET_ID = "770e8400-e29b-41d4-a716-4466554400f1"
 PDF_ASSET_ID_3 = "770e8400-e29b-41d4-a716-4466554400f3"
 COVER_ASSET_ID = "770e8400-e29b-41d4-a716-4466554400c1"
+STORY_ASSET_ID = "770e8400-e29b-41d4-a716-4466554400c2"
 
+_STORY_JPEG = b"\xff\xd8\xff\xe0 foto del servizio 2024-01-15 " + b"z" * 256
 _COVER_JPEG = b"\xff\xd8\xff\xe0 prima pagina 2024-01-15 " + b"y" * 256
 
 _BODY = (
@@ -58,6 +60,10 @@ class SeedEdition(BaseModel):
     #: None means this edition has no front page — `get_edition_cover` must
     #: raise DocumentNotFound for it, not return a blank cover.
     cover: EditionCover | None = None
+    #: The cover story's own photo, when it has one and it is not the cover
+    #: picture. Backends that keep the two apart must return `cover.image`, not
+    #: this; backends that cannot express it ignore it.
+    cover_story_image: AssetRef | None = None
 
 
 class CorpusSeed(BaseModel):
@@ -153,6 +159,14 @@ DEFAULT_SEED = CorpusSeed(
                     size=len(_COVER_JPEG),
                 ),
             ),
+            # Deliberately a different file from the cover picture: an adapter
+            # reading the story's photo instead fails the contract suite here.
+            cover_story_image=AssetRef(
+                id=STORY_ASSET_ID,
+                filename="2024-01-15-servizio.jpg",
+                mime="image/jpeg",
+                size=len(_STORY_JPEG),
+            ),
         ),
         # No PDF and no cover: `EditionQuery(require_pdf=True)` must exclude
         # it, and `get_edition_cover` must report it as not found.
@@ -175,5 +189,6 @@ DEFAULT_SEED = CorpusSeed(
         PDF_ASSET_ID: b"%PDF-1.4 edizione 2024-01-15 " + b"x" * 512,
         PDF_ASSET_ID_3: b"%PDF-1.4 edizione 2024-01-17 " + b"x" * 512,
         COVER_ASSET_ID: _COVER_JPEG,
+        STORY_ASSET_ID: _STORY_JPEG,
     },
 )

@@ -214,10 +214,33 @@ class TestCoverQueryCompilation:
         fields = compile_cover_query("ed-1", MANIFESTO_SCHEMA)["fields"].split(",")
         assert "referenceHeadline" in fields
         assert "articleKicker" in fields
+        assert "referenceImage.image.id" in fields
+        assert "referenceImage.image.type" in fields
+        assert "referenceImage.image.filename_download" in fields
+        assert "referenceImage.image.filesize" in fields
+
+    def test_projects_the_fallback_image_in_the_same_request(self):
+        """The story's own photo stands in when the cover picture is null, so
+        both file records must arrive together or the fallback costs a second
+        round trip (and an incomplete AssetRef)."""
+        fields = compile_cover_query("ed-1", MANIFESTO_SCHEMA)["fields"].split(",")
         assert "articleFeaturedImage.image.id" in fields
         assert "articleFeaturedImage.image.type" in fields
         assert "articleFeaturedImage.image.filename_download" in fields
         assert "articleFeaturedImage.image.filesize" in fields
+
+    def test_a_schema_without_a_fallback_projects_only_the_primary_image(self):
+        schema = DirectusSchema(
+            cover_fields={
+                "article_id": "id",
+                "headline": "frontPageTitle",
+                "kicker": "standfirst",
+                "image": "leadImage.file",
+            }
+        )
+        fields = compile_cover_query("ed-1", schema)["fields"].split(",")
+        assert "leadImage.file.id" in fields
+        assert not any(f.startswith("articleFeaturedImage") for f in fields)
 
     def test_does_not_project_the_article_headline(self):
         fields = compile_cover_query("ed-1", MANIFESTO_SCHEMA)["fields"].split(",")

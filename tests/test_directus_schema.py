@@ -46,7 +46,12 @@ class TestDirectusSchema:
 
     def test_cover_vocabulary_is_schema_data(self):
         assert MANIFESTO_SCHEMA.cover_field("headline") == "referenceHeadline"
-        assert MANIFESTO_SCHEMA.cover_field("image") == "articleFeaturedImage.image"
+        assert MANIFESTO_SCHEMA.cover_field("image") == "referenceImage.image"
+        assert MANIFESTO_SCHEMA.cover_field("image_fallback") == "articleFeaturedImage.image"
+        assert MANIFESTO_SCHEMA.cover_image_fields == (
+            "referenceImage.image",
+            "articleFeaturedImage.image",
+        )
         assert MANIFESTO_SCHEMA.cover_filter == {"articlePositionCover": "1"}
         assert MANIFESTO_SCHEMA.file_field("mime") == "type"
         assert MANIFESTO_SCHEMA.file_field("size") == "filesize"

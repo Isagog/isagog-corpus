@@ -35,13 +35,22 @@ EDITION_FIELDS: Mapping[str, str] = {
 
 #: The front page. Its fields live on the cover *article*, not on the edition
 #: row: `referenceHeadline` is the display headline il manifesto prints on the
-#: cover, which is routinely not the cover story's own `headline`.
+#: cover, which is routinely not the cover story's own `headline`. The same
+#: goes for the picture: `referenceImage` (CMS label "Immagine in copertina")
+#: is the cover picture, while `articleFeaturedImage` is the story's own photo
+#: and is only a stand-in when the cover picture was never set (null on ~11% of
+#: cover rows overall, ~5% since 2014).
 COVER_FIELDS: Mapping[str, str] = {
     "article_id": "id",
     "headline": "referenceHeadline",
     "kicker": "articleKicker",
-    "image": "articleFeaturedImage.image",
+    "image": "referenceImage.image",
+    "image_fallback": "articleFeaturedImage.image",
 }
+
+#: Cover image fields in order of preference; absent keys are skipped, so an
+#: instance with a single image field declares only `image`.
+COVER_IMAGE_FIELDS = ("image", "image_fallback")
 
 #: `directus_files`. Projecting these through the image relation is what makes
 #: an `AssetRef` arrive complete in one request — a caller deriving a file
@@ -101,6 +110,11 @@ class DirectusSchema(BaseModel):
 
     def file_field(self, name: str) -> str:
         return self.file_fields[name]
+
+    @property
+    def cover_image_fields(self) -> tuple[str, ...]:
+        """Directus paths of the cover image, most preferred first."""
+        return tuple(self.cover_fields[n] for n in COVER_IMAGE_FIELDS if n in self.cover_fields)
 
     @property
     def supports_covers(self) -> bool:

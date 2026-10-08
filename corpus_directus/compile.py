@@ -56,8 +56,8 @@ def cover_projection(schema: DirectusSchema) -> str:
     """Scalar cover fields plus the file record behind the image, so the
     `AssetRef` arrives complete in the same response."""
     fields = [schema.cover_field(name) for name in _COVER_PROJECTION]
-    image = schema.cover_field("image")
-    fields += [f"{image}.{schema.file_field(name)}" for name in _FILE_PROJECTION]
+    for image in schema.cover_image_fields:
+        fields += [f"{image}.{schema.file_field(name)}" for name in _FILE_PROJECTION]
     return ",".join(fields)
 
 
